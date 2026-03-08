@@ -1,5 +1,5 @@
 [package]
-name = "rustface-std"
+name = "rustyface"
 version = "0.1.0"
 authors = ["Holger Graef <holger.graef@gmail.com>"]
 edition = "2021"
@@ -7,7 +7,7 @@ resolver = "2"
 rust-version = "1.77"
 
 [[bin]]
-name = "rustface-std"
+name = "rustyface"
 harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
