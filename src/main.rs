@@ -1,5 +1,5 @@
 use esp_idf_hal::delay::Delay;
-use esp_idf_hal::gpio::{Level, PinDriver};
+use esp_idf_hal::gpio::{PinDriver};
 use esp_idf_hal::prelude::*;
 use esp_idf_hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver};
 use esp_idf_hal::units::FromValueType;
@@ -35,7 +35,6 @@ fn main() {
     // SPI pins
     let sclk = peripherals.pins.gpio4;
     let mosi = peripherals.pins.gpio6;
-    let cs_pin = peripherals.pins.gpio2;
     let dc_pin = peripherals.pins.gpio1;
     let rst_pin = peripherals.pins.gpio0;
 
@@ -53,18 +52,12 @@ fn main() {
     )
     .unwrap();
 
-    let spi_device = SpiDeviceDriver::new(spi_driver, Some(cs_pin), &spi_config).unwrap();
+    let spi_device = SpiDeviceDriver::new(spi_driver, None::<esp_idf_hal::gpio::AnyIOPin>, &spi_config).unwrap();
 
     let dc = PinDriver::output(dc_pin).unwrap();
     let mut rst = PinDriver::output(rst_pin).unwrap();
-
     let mut delay = Delay::new_default();
-
-    // Reset the display
-    rst.set_level(Level::Low).unwrap();
-    delay.delay_ms(50);
-    rst.set_level(Level::High).unwrap();
-    delay.delay_ms(50);
+    rst.set_high().unwrap(); // Ensure reset pin is high before initialization
 
     // Create display interface
     let mut buffer = [0u8; 512];
