@@ -1,12 +1,15 @@
+use embedded_graphics::framebuffer::{buffer_size, Framebuffer};
+use embedded_graphics::image::Image;
+use embedded_graphics::pixelcolor::raw::{LittleEndian, RawU16};
 use esp_idf_hal::delay::Delay;
-use esp_idf_hal::gpio::{PinDriver};
+use esp_idf_hal::gpio::PinDriver;
 use esp_idf_hal::prelude::*;
 use esp_idf_hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver};
 use esp_idf_hal::units::FromValueType;
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle};
+use embedded_graphics::primitives::{Circle, PrimitiveStyle, Rectangle};
 
 use mipidsi::options::ColorOrder;
 
@@ -52,7 +55,8 @@ fn main() {
     )
     .unwrap();
 
-    let spi_device = SpiDeviceDriver::new(spi_driver, None::<esp_idf_hal::gpio::AnyIOPin>, &spi_config).unwrap();
+    let spi_device =
+        SpiDeviceDriver::new(spi_driver, None::<esp_idf_hal::gpio::AnyIOPin>, &spi_config).unwrap();
 
     let dc = PinDriver::output(dc_pin).unwrap();
     let mut rst = PinDriver::output(rst_pin).unwrap();
@@ -73,6 +77,15 @@ fn main() {
         .unwrap();
 
     log::info!("Display initialized!");
+
+    let mut fb = Box::new(Framebuffer::<
+        Rgb565,
+        RawU16,
+        LittleEndian,
+        240,
+        240,
+        { buffer_size::<Rgb565>(240, 240) },
+    >::new());
 
     display.clear(Rgb565::BLACK).unwrap();
 
@@ -101,10 +114,13 @@ fn main() {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(30));
 
+        let old_x = x;
+        let old_y = y;
+
         // Erase previous circle
         Circle::new(Point::new(x - radius, y - radius), diameter)
             .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(&mut display)
+            .draw(&mut *fb)
             .unwrap();
 
         x += vx;
@@ -124,7 +140,24 @@ fn main() {
         // Draw new circle
         Circle::new(Point::new(x - radius, y - radius), diameter)
             .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
-            .draw(&mut display)
+            .draw(&mut *fb)
             .unwrap();
+
+        let frame = fb.as_image();
+        let draw_start = std::time::Instant::now();
+        // NOTE: limiting the drawing area to the union of the old and new circle positions to optimize redraws
+        Image::new(&frame, Point::zero())
+            .draw(&mut display.clipped(&Rectangle::new(
+                Point::new(
+                    std::cmp::min(old_x, x) - radius,
+                    std::cmp::min(old_y, y) - radius,
+                ),
+                Size::new(
+                    (x - old_x).abs() as u32 + diameter,
+                    (y - old_y).abs() as u32 + diameter,
+                ),
+            )))
+            .unwrap();
+        log::info!("Draw time: {:?}", draw_start.elapsed());
     }
 }
