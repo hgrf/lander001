@@ -1055,9 +1055,11 @@ impl LanderGui {
                     .args(["get", "org.gnome.desktop.interface", "color-scheme"])
                     .output();
                 if let Ok(out) = output {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    if text.trim().contains("dark") {
-                        return true;
+                    if out.status.success() {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        if text.trim().to_ascii_lowercase().contains("dark") {
+                            return true;
+                        }
                     }
                 }
                 // Fallback: check gtk-theme name
@@ -1065,9 +1067,11 @@ impl LanderGui {
                     .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
                     .output();
                 if let Ok(out) = output {
-                    let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                    if text.contains("dark") {
-                        return true;
+                    if out.status.success() {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        if text.trim().to_ascii_lowercase().contains("dark") {
+                            return true;
+                        }
                     }
                 }
                 return false;
