@@ -832,6 +832,60 @@ fn run_macos_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()>
     }
 }
 
+fn print_help() {
+    println!(
+        "lander001-host-gui — desktop host bridge for the lander001 desk robot
+
+USAGE:
+    lander001-host-gui [OPTIONS] [PORT]
+
+ARGUMENTS:
+    PORT                     Serial port to use (auto-detected when omitted)
+
+OPTIONS:
+    -h, --help               Print this help message and exit
+
+MODES (headless, mutually exclusive with GUI):
+    --nogui                  Run in headless mode (no window)
+    --background             Run headless in background style (no window)
+    --tray                   Run as a macOS tray application
+
+MONITORING:
+    --linux-monitor PORT     Forward Linux desktop notifications to the robot
+    --macos-monitor PORT     Forward macOS desktop notifications to the robot
+
+SIMULATION:
+    --simulate PRESET        Send a simulated notification (whatsapp|mail|calendar|system)
+    --from NAME              Sender name for simulation  [default: Alice]
+    --text TEXT              Message text for simulation [default: Hey! This is a test message]
+    --count N                Number of notifications to send [default: 1]
+    --interval-ms MS         Delay between burst notifications in ms [default: 1200]
+
+EXAMPLES:
+    # Launch GUI (default)
+    lander001-host-gui
+
+    # Headless mode with auto-detected port
+    lander001-host-gui --nogui
+
+    # Explicit port in headless mode
+    lander001-host-gui --nogui /dev/cu.usbmodemXXXX
+
+    # Simulate a WhatsApp notification
+    lander001-host-gui --nogui --simulate whatsapp --from \"Holger\" --text \"Coffee in 5?\"
+
+    # Burst simulation
+    lander001-host-gui --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800
+
+    # macOS live notification forwarding
+    lander001-host-gui --nogui --macos-monitor /dev/cu.usbmodemXXXX
+
+    # macOS tray mode
+    lander001-host-gui --tray --macos-monitor /dev/cu.usbmodemXXXX
+"
+    );
+}
+
 fn run_with_args(args: Vec<String>) -> Result<()> {
     let mut linux_monitor = false;
     let mut macos_monitor = false;
@@ -883,6 +937,10 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
                     .parse::<u64>()
                     .with_context(|| format!("invalid --interval-ms value '{}'", value))?;
                 i += 2;
+            }
+            "-h" | "--help" => {
+                print_help();
+                return Ok(());
             }
             other if other.starts_with('-') => {
                 bail!("unknown argument '{}'; expected monitor/sim flags", other);
@@ -1393,6 +1451,12 @@ impl eframe::App for LanderGui {
 
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return Ok(());
+    }
+
     let wants_tray = args.iter().any(|a| a == "--tray");
     let force_gui = args.iter().any(|a| a == "--gui");
     let wants_headless = args.iter().any(|a| {
