@@ -1149,7 +1149,7 @@ impl LanderGui {
 
         let connect_id = {
             let controller = Arc::clone(&controller);
-            let _id = tray
+            let id = tray
                 .add_menu_item_with_id("Connect", move || {
                     if let Ok(mut controller) = controller.lock() {
                         if controller.is_connected() {
@@ -1161,8 +1161,8 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(_id, "wifi");
-            _id
+            tray.inner_mut().set_item_sf_symbol(id, "wifi");
+            id
         };
 
         {
