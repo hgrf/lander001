@@ -1,10 +1,12 @@
-[build]
-target = "riscv32imc-esp-espidf"
-
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = [ "--cfg",  "espidf_time64"]
+
+[alias]
+fw-build = "build --target riscv32imc-esp-espidf"
+fw-check = "check --target riscv32imc-esp-espidf"
+fw-run = "run --target riscv32imc-esp-espidf"
 
 [unstable]
 build-std = ["std", "panic_abort"]
