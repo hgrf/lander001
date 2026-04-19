@@ -1,0 +1,21 @@
+[package]
+name = "lander001-host-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+crc32fast = "1.4"
+eframe = "0.31"
+egui = "0.31"
+egui-phosphor = "0.9.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+prost = { version = "0.13", default-features = false, features = ["derive", "std"] }
+serialport = "4.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-item = "0.10"
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
