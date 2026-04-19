@@ -1,0 +1,245 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint host GUI crate
+        run: cargo clippy --manifest-path host-gui/Cargo.toml --all-targets -- -D warnings
+
+  build-linux-appimage:
+    name: Build Linux AppImage
+    runs-on: ubuntu-latest
+    needs: quality
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            file \
+            patchelf \
+            desktop-file-utils \
+            imagemagick \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path host-gui/Cargo.toml
+
+      - name: Download AppImage tooling
+        run: |
+          curl -L -o linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -L -o appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x linuxdeploy.AppImage appimagetool.AppImage
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp host-gui/target/release/lander001-host-gui AppDir/usr/bin/
+          convert assets/gui/icon.png -resize 512x512 AppDir/lander001-host-gui.png
+
+          cat > AppDir/lander001-host-gui.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Lander001 Host GUI
+          Exec=lander001-host-gui
+          Icon=lander001-host-gui
+          Categories=Utility;
+          Terminal=false
+          EOF
+
+      - name: Bundle AppImage
+        env:
+          ARCH: x86_64
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            --desktop-file AppDir/lander001-host-gui.desktop \
+            --icon-file AppDir/lander001-host-gui.png \
+            --executable AppDir/usr/bin/lander001-host-gui
+
+          ./appimagetool.AppImage AppDir lander001-host-gui-linux-x86_64.AppImage
+
+      - name: Upload Linux AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lander001-host-gui-linux-x86_64
+          path: lander001-host-gui-linux-x86_64.AppImage
+          if-no-files-found: error
+
+  build-macos-app:
+    name: Build macOS App
+    runs-on: macos-latest
+    needs: quality
+    env:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path host-gui/Cargo.toml
+
+      - name: Assemble .app bundle
+        run: |
+          APP_ROOT="dist/Lander001 Host GUI.app"
+          mkdir -p "$APP_ROOT/Contents/MacOS" "$APP_ROOT/Contents/Resources"
+
+          cp host-gui/target/release/lander001-host-gui "$APP_ROOT/Contents/MacOS/lander001-host-gui"
+          cp assets/gui/icon.png "$APP_ROOT/Contents/Resources/icon.png"
+
+          cat > "$APP_ROOT/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Lander001 Host GUI</string>
+            <key>CFBundleDisplayName</key>
+            <string>Lander001 Host GUI</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.holgergraef.lander001-host-gui</string>
+            <key>CFBundleVersion</key>
+            <string>0.1.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleExecutable</key>
+            <string>lander001-host-gui</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Import macOS signing certificate
+        if: ${{ env.MACOS_CERTIFICATE_P12_BASE64 != '' && env.MACOS_CERTIFICATE_PASSWORD != '' }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="temporary-ci-password"
+          CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
+
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+      - name: Sign app bundle
+        run: |
+          APP_ROOT="dist/Lander001 Host GUI.app"
+          CODESIGN_IDENTITY="$MACOS_CODESIGN_IDENTITY"
+
+          if [[ -n "$CODESIGN_IDENTITY" ]]; then
+            echo "Signing with identity: $CODESIGN_IDENTITY"
+            codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP_ROOT"
+          else
+            echo "No Developer ID identity configured; applying ad-hoc signature"
+            codesign --force --deep --sign - "$APP_ROOT"
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_ROOT"
+
+      - name: Package app bundle
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" lander001-host-gui-macos-app.zip
+
+      - name: Notarize app bundle (optional)
+        if: ${{ env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' && env.MACOS_CODESIGN_IDENTITY != '' }}
+        run: |
+          xcrun notarytool submit "lander001-host-gui-macos-app.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple "dist/Lander001 Host GUI.app"
+          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" lander001-host-gui-macos-app.zip
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lander001-host-gui-macos-app
+          path: lander001-host-gui-macos-app.zip
+          if-no-files-found: error
