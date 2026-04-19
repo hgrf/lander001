@@ -19,10 +19,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-quality-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-quality-
+
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             pkg-config \
             libdbus-1-dev \
             libasound2-dev \
@@ -60,10 +67,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-appimage-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-appimage-
+
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             pkg-config \
             file \
             patchelf \
@@ -92,7 +106,17 @@ jobs:
       - name: Build release binary
         run: cargo build --release --manifest-path host-gui/Cargo.toml
 
+      - name: Cache AppImage tools
+        id: cache-appimage-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            linuxdeploy.AppImage
+            appimagetool.AppImage
+          key: appimage-tools-${{ hashFiles('.github/workflows/ci.yml') }}
+
       - name: Download AppImage tooling
+        if: steps.cache-appimage-tools.outputs.cache-hit != 'true'
         run: |
           curl -L -o linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           curl -L -o appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
