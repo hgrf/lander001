@@ -1,5 +1,5 @@
 [package]
-name = "rustyface"
+name = "lander001"
 version = "0.1.0"
 authors = ["Holger Graef <holger.graef@gmail.com>"]
 edition = "2021"
@@ -7,7 +7,7 @@ resolver = "2"
 rust-version = "1.77"
 
 [[bin]]
-name = "rustyface"
+name = "lander001"
 harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
@@ -30,6 +30,10 @@ mipidsi = "0.9.0"
 embedded-graphics = "0.8.2"
 embedded-hal-bus = "0.3.0"
 embedded-hal = "1.0.0"
+drive_74hc595 = "0.2.0"
+dummy-pin = "1.0.0"
+prost = { version = "0.13", default-features = false, features = ["derive"] }
+crc32fast = "1.4"
 
 # --- Optional Embassy Integration ---
 # esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
@@ -50,3 +54,6 @@ embedded-hal = "1.0.0"
 
 [build-dependencies]
 embuild = "0.33"
+image = { version = "0.25", default-features = false, features = ["png"] }
+prost-build = "0.13"
+protoc-bin-vendored = "3"
