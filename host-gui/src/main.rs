@@ -213,12 +213,23 @@ Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppI
     let tray_icon_img = image::load_from_memory(&tray_icon_bytes)
         .context("failed to decode tray satellite icon")?;
 
+    // ksni (Linux) requires raw ARGB32 pixels in network byte order; macOS
+    // uses NSImage which can decode PNG bytes directly.
+    #[cfg(target_os = "linux")]
+    let tray_icon_data = tray_icon_img
+        .to_rgba8()
+        .pixels()
+        .flat_map(|p| [p[3], p[0], p[1], p[2]])
+        .collect::<Vec<u8>>();
+    #[cfg(target_os = "macos")]
+    let tray_icon_data = tray_icon_bytes;
+
     let mut tray = TrayItem::new(
         "lander001",
         IconSource::Data {
             height: tray_icon_img.height() as i32,
             width: tray_icon_img.width() as i32,
-            data: tray_icon_bytes,
+            data: tray_icon_data,
         },
     )
     .context("failed to create tray icon")
