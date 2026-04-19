@@ -3,7 +3,9 @@ use dummy_pin::DummyPin;
 use embedded_graphics::image::{Image, ImageRawLE};
 use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_8X13_BOLD};
 use embedded_graphics::mono_font::MonoTextStyleBuilder;
-use embedded_graphics::primitives::{Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Triangle};
+use embedded_graphics::primitives::{
+    Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Triangle,
+};
 use embedded_graphics::text::Text;
 use esp_idf_hal::delay::Delay;
 use esp_idf_hal::gpio::PinDriver;
@@ -142,7 +144,10 @@ where
     let icon_hint = evt.app_icon_hint.to_ascii_lowercase();
     let app = evt.source_app.to_ascii_lowercase();
 
-    let accent = if bundle.contains("whatsapp") || icon_hint.contains("whatsapp") || app.contains("whatsapp") {
+    let accent = if bundle.contains("whatsapp")
+        || icon_hint.contains("whatsapp")
+        || app.contains("whatsapp")
+    {
         Rgb565::new(4, 28, 10)
     } else if bundle.contains("outlook") || bundle.contains("mail") || icon_hint.contains("mail") {
         Rgb565::new(2, 12, 28)
@@ -235,10 +240,7 @@ where
     std::thread::yield_now();
 }
 
-fn write_wire_message(
-    usb_serial: &mut UsbSerialDriver<'_>,
-    msg: &protocol::pb::WireMessage,
-) {
+fn write_wire_message(usb_serial: &mut UsbSerialDriver<'_>, msg: &protocol::pb::WireMessage) {
     let frame = match protocol::encode_frame(msg) {
         Ok(f) => f,
         Err(err) => {
@@ -259,19 +261,16 @@ fn write_wire_message(
     }
 }
 
-fn send_ack(
-    usb_serial: &mut UsbSerialDriver<'_>,
-    original_msg_id: u32,
-    ok: bool,
-    error: String,
-) {
+fn send_ack(usb_serial: &mut UsbSerialDriver<'_>, original_msg_id: u32, ok: bool, error: String) {
     let ack = protocol::pb::WireMessage {
         msg_id: original_msg_id.saturating_add(10_000),
-        payload: Some(protocol::pb::wire_message::Payload::Ack(protocol::pb::Ack {
-            msg_id: original_msg_id,
-            ok,
-            error,
-        })),
+        payload: Some(protocol::pb::wire_message::Payload::Ack(
+            protocol::pb::Ack {
+                msg_id: original_msg_id,
+                ok,
+                error,
+            },
+        )),
     };
 
     write_wire_message(usb_serial, &ack);
@@ -546,19 +545,31 @@ fn main() {
         .frequency(50.Hz().into())
         .resolution(esp_idf_hal::ledc::config::Resolution::Bits14);
     let servo_timer = LedcTimerDriver::new(peripherals.ledc.timer0, &servo_timer_cfg).unwrap();
-    let mut servo =
-        LedcDriver::new(peripherals.ledc.channel0, &servo_timer, peripherals.pins.gpio5).unwrap();
+    let mut servo = LedcDriver::new(
+        peripherals.ledc.channel0,
+        &servo_timer,
+        peripherals.pins.gpio5,
+    )
+    .unwrap();
     servo
         .set_duty(servo_angle_to_duty(90.0, servo.get_max_duty()))
         .unwrap();
     log::info!("Servo initialized on GPIO5 at 90 degrees");
 
-    let mut drive = ShiftRegister::new(DummyPin::new_high(), PinDriver::output(peripherals.pins.gpio10).unwrap(), DummyPin::new_high(), PinDriver::output(peripherals.pins.gpio21).unwrap(), PinDriver::output(peripherals.pins.gpio20).unwrap()); 
+    let mut drive = ShiftRegister::new(
+        DummyPin::new_high(),
+        PinDriver::output(peripherals.pins.gpio10).unwrap(),
+        DummyPin::new_high(),
+        PinDriver::output(peripherals.pins.gpio21).unwrap(),
+        PinDriver::output(peripherals.pins.gpio20).unwrap(),
+    );
     drive.begin();
     drive.enable_output();
     drive.load(0x01);
 
-    let usb_cfg = UsbSerialConfig::new().rx_buffer_size(1024).tx_buffer_size(512);
+    let usb_cfg = UsbSerialConfig::new()
+        .rx_buffer_size(1024)
+        .tx_buffer_size(512);
     let mut usb_serial = UsbSerialDriver::new(
         peripherals.usb_serial,
         peripherals.pins.gpio18,
@@ -650,7 +661,7 @@ fn main() {
     let di = mipidsi::interface::SpiInterface::new(spi_device, dc, &mut buffer);
 
     // Initialize the display
-    let orientation =Orientation::new();
+    let orientation = Orientation::new();
     let mut display = mipidsi::Builder::new(mipidsi::models::ST7789, di)
         .reset_pin(rst)
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
