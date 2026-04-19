@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   pull_request:
   workflow_dispatch:
 
@@ -269,3 +271,29 @@ jobs:
           name: lander001-host-gui-macos-app
           path: lander001-host-gui-macos-app.zip
           if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-linux-appimage, build-macos-app]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Linux AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lander001-host-gui-linux-x86_64
+
+      - name: Download macOS app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lander001-host-gui-macos-app
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            lander001-host-gui-linux-x86_64.AppImage
+            lander001-host-gui-macos-app.zip
