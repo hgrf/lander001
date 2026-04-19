@@ -5,7 +5,7 @@ pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/rustyface.rs"));
 }
 
-const FRAME_MAGIC: [u8; 2] = [b'R', b'F'];
+const FRAME_MAGIC: [u8; 2] = *b"RF";
 const FRAME_VERSION: u8 = 1;
 const FRAME_HEADER_LEN: usize = 2 + 1 + 2 + 4;
 const MAX_PAYLOAD_LEN: usize = 4096;

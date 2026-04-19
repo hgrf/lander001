@@ -41,6 +41,7 @@ fn list_ports() -> Vec<String> {
     names
 }
 
+#[cfg(target_os = "macos")]
 struct TrayRobotController {
     ports: Vec<String>,
     selected_port_idx: usize,
@@ -48,6 +49,7 @@ struct TrayRobotController {
     next_msg_id: u32,
 }
 
+#[cfg(target_os = "macos")]
 impl Default for TrayRobotController {
     fn default() -> Self {
         Self {
@@ -59,6 +61,7 @@ impl Default for TrayRobotController {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl TrayRobotController {
     fn log(&self, text: impl AsRef<str>) {
         eprintln!("tray: {}", text.as_ref());
@@ -1425,8 +1428,10 @@ fn main() -> Result<()> {
         native_options,
         Box::new(|cc| {
             LanderGui::install_fonts_and_text_style(&cc.egui_ctx);
-            let mut app = LanderGui::default();
-            app.app_icon_texture = LanderGui::load_app_icon_texture(&cc.egui_ctx);
+            let app = LanderGui {
+                app_icon_texture: LanderGui::load_app_icon_texture(&cc.egui_ctx),
+                ..Default::default()
+            };
             Ok(Box::new(app))
         }),
     )
