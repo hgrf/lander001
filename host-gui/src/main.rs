@@ -986,6 +986,28 @@ impl Default for LanderGui {
 }
 
 impl LanderGui {
+    fn shortcut_keycap(ui: &mut egui::Ui, text: &str) {
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(12.0)
+                        .monospace()
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 236, 220)),
+                );
+            });
+    }
+
+    fn shortcut_hint(ui: &mut egui::Ui, keys: &[&str]) {
+        ui.horizontal(|ui| {
+            for key in keys {
+                Self::shortcut_keycap(ui, key);
+            }
+        });
+    }
+
     fn install_fonts_and_text_style(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
@@ -1239,6 +1261,68 @@ impl LanderGui {
 
 impl eframe::App for LanderGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Keyboard shortcut handling ──────────────────────────────────────
+        // Read all key-presses in a single borrow, then act on them so that
+        // we avoid holding the `input()` borrow while calling `&mut self`.
+        let (
+            key_c, key_d, key_p,
+            key_up, key_down, key_s,
+            key_1, key_2, key_3, key_4,
+            key_n,
+        ) = ctx.input(|i| (
+            i.key_pressed(egui::Key::C),
+            i.key_pressed(egui::Key::D),
+            i.key_pressed(egui::Key::P),
+            i.key_pressed(egui::Key::ArrowRight),
+            i.key_pressed(egui::Key::ArrowLeft),
+            i.key_pressed(egui::Key::S),
+            i.key_pressed(egui::Key::Num1),
+            i.key_pressed(egui::Key::Num2),
+            i.key_pressed(egui::Key::Num3),
+            i.key_pressed(egui::Key::Num4),
+            i.key_pressed(egui::Key::N),
+        ));
+
+        // Only fire shortcuts when no text-edit (or other keyboard-consuming
+        // widget) currently holds focus.
+        let any_widget_focused = ctx.memory(|m| m.focused().is_some());
+        if !any_widget_focused {
+            // Snapshot connection state needed to guard some shortcuts.
+            let connected = self.controller.lock().unwrap().is_connected();
+
+            if key_c && !connected {
+                self.controller.lock().unwrap().connect();
+            }
+            if key_d && connected {
+                self.controller.lock().unwrap().disconnect();
+            }
+            if key_p && connected {
+                self.controller.lock().unwrap().send_ping();
+            }
+            if key_up && connected {
+                self.servo_angle = (self.servo_angle + 5.0).min(270.0);
+                self.controller.lock().unwrap().send_servo(self.servo_angle);
+            }
+            if key_down && connected {
+                self.servo_angle = (self.servo_angle - 5.0).max(0.0);
+                self.controller.lock().unwrap().send_servo(self.servo_angle);
+            }
+            if key_s && connected {
+                self.controller.lock().unwrap().send_servo(self.servo_angle);
+            }
+            for (pressed, pattern) in [(key_1, 1u32), (key_2, 2), (key_3, 3), (key_4, 4)] {
+                if pressed && connected {
+                    self.led_pattern = pattern;
+                    self.controller.lock().unwrap().send_led(pattern, self.led_repeats);
+                }
+            }
+            if key_n && connected {
+                let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
+                self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
+            }
+        }
+        // ───────────────────────────────────────────────────────────────────
+
         let mut visuals = egui::Visuals::dark();
         visuals.override_text_color = Some(egui::Color32::from_rgb(235, 246, 235));
         visuals.panel_fill = egui::Color32::from_rgb(34, 36, 40);
@@ -1341,8 +1425,10 @@ impl eframe::App for LanderGui {
                             if ui.button("Connect").clicked() {
                                 self.controller.lock().unwrap().connect();
                             }
+                            Self::shortcut_hint(ui, &["C"]);
                         } else if ui.button("Disconnect").clicked() {
                             self.controller.lock().unwrap().disconnect();
+                            Self::shortcut_hint(ui, &["D"]);
                         }
                     });
 
@@ -1367,9 +1453,12 @@ impl eframe::App for LanderGui {
                     });
 
                     ui.add_enabled_ui(connected, |ui| {
-                        if ui.button("Ping").clicked() {
-                            self.controller.lock().unwrap().send_ping();
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Ping").clicked() {
+                                self.controller.lock().unwrap().send_ping();
+                            }
+                            Self::shortcut_hint(ui, &["P"]);
+                        });
                     });
                 });
 
@@ -1390,6 +1479,7 @@ impl eframe::App for LanderGui {
                             if ui.button("Send").clicked() {
                                 self.controller.lock().unwrap().send_servo(self.servo_angle);
                             }
+                            Self::shortcut_hint(ui, &["S"]);
                         });
 
                         ui.horizontal(|ui| {
@@ -1403,6 +1493,7 @@ impl eframe::App for LanderGui {
                                     .unwrap()
                                     .send_led(self.led_pattern, self.led_repeats);
                             }
+                            Self::shortcut_hint(ui, &["1", "2", "3", "4"]);
                         });
 
                         ui.horizontal(|ui| {
@@ -1445,15 +1536,73 @@ impl eframe::App for LanderGui {
                             ui.text_edit_singleline(&mut self.text);
                         });
 
-                        if ui.button("Send notification + fun animation").clicked() {
-                            let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
-                            self.controller
-                                .lock()
-                                .unwrap()
-                                .send_notification_and_animation(&p, &f, &t);
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Send notification + fun animation").clicked() {
+                                let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
+                                self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
+                            }
+                            Self::shortcut_hint(ui, &["N"]);
+                        });
                     });
                 });
+
+                ui.add_space(16.0);
+
+                // ── Keyboard cheatsheet ─────────────────────────────────
+                ui.group(|ui| {
+                    ui.set_min_width(ui.available_width());
+
+                    let header_text = egui::RichText::new(
+                        format!("{} Keyboard shortcuts", regular::KEYBOARD)
+                    ).strong();
+                    ui.label(header_text);
+                    ui.add_space(8.0);
+                    egui::Grid::new("cheatsheet_grid")
+                        .num_columns(2)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| {
+                            Self::shortcut_hint(ui, &["C"]);
+                            ui.label("Connect");
+                            ui.end_row();
+
+                            Self::shortcut_hint(ui, &["D"]);
+                            ui.label("Disconnect");
+                            ui.end_row();
+
+                            Self::shortcut_hint(ui, &["P"]);
+                            ui.label("Ping");
+                            ui.end_row();
+
+                            ui.horizontal(|ui| {
+                                Self::shortcut_keycap(ui, "←");
+                                ui.label("/");
+                                Self::shortcut_keycap(ui, "→");
+                            });
+                            ui.label("Servo +5° / −5°  (auto-send)");
+                            ui.end_row();
+
+                            Self::shortcut_hint(ui, &["S"]);
+                            ui.label("Send current servo angle");
+                            ui.end_row();
+
+                            Self::shortcut_hint(ui, &["1", "2", "3", "4"]);
+                            ui.label("Run LED pattern 1-4");
+                            ui.end_row();
+
+                            Self::shortcut_hint(ui, &["N"]);
+                            ui.label("Send notification + animation");
+                            ui.end_row();
+                        });
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Shortcuts inactive while a text field has focus."
+                        )
+                        .italics()
+                        .weak(),
+                    );
+                });
+                // ───────────────────────────────────────────────────────
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1494,10 +1643,10 @@ fn main() -> Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: if let Some(icon) = app_icon {
             egui::ViewportBuilder::default()
-                .with_inner_size([1200.0, 720.0])
+                .with_inner_size([1200.0, 820.0])
                 .with_icon(icon)
         } else {
-            egui::ViewportBuilder::default().with_inner_size([1200.0, 720.0])
+            egui::ViewportBuilder::default().with_inner_size([1200.0, 820.0])
         },
         ..Default::default()
     };
