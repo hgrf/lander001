@@ -2,9 +2,9 @@
 
 ![lander001](doc/images/lander_cover.png)
 
-> **Credit:** The lander sculpture is inspired by [Mohit Boite](https://bhoite.com/sculptures/)'s admittedly much prettier models.
+> ✨ **Credit:** The lander sculpture is inspired by [Mohit Boite](https://bhoite.com/sculptures/)'s admittedly much prettier models.
 
-> **Disclaimer:** This project is mostly vibe-coded with [GitHub Copilot](https://github.com/features/copilot). Expect creative architecture decisions, occasional hallucinated APIs, and a general sense that the robot knows more than it lets on.
+> 🤖 **Disclaimer:** This project is mostly vibe-coded with [GitHub Copilot](https://github.com/features/copilot). Expect creative architecture decisions, occasional hallucinated APIs, and a general sense that the robot knows more than it lets on.
 
 **lander001** is a small desk robot that reacts to your computer's notifications in real time. It runs on an ESP32-C3 and communicates with a host bridge over USB using a framed protobuf protocol. When a notification arrives — a message, an email, a calendar reminder — the robot lights up its LEDs, swings its servo-controlled antenna, and renders a notification card on its 240×240 TFT display, with app-specific icons and sender details.
 
@@ -12,12 +12,12 @@ The host bridge is a Rust CLI that runs on macOS or Linux and monitors the syste
 
 **Hardware:**
 
-- ESP32-C3 Super Mini
-- ST7789 240×240 TFT display (SPI)
-- 74HC595 shift register driving 8 LEDs
-- SG90-style servo as an antenna
+- 🧠 ESP32-C3 Super Mini
+- 🖥️ ST7789 240×240 TFT display (SPI)
+- 💡 74HC595 shift register driving 8 LEDs
+- 📡 SG90-style servo as an antenna
 
-### Prerequisites
+### 🧰 Prerequisites
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -25,7 +25,7 @@ cargo install ldproxy
 cargo install espflash
 ```
 
-### Pinout
+### 🔌 Pinout
 
 ESP32-C3 Super Mini to ST7789 240x240 TFT Display:
 
@@ -36,7 +36,7 @@ ESP32-C3 Super Mini to ST7789 240x240 TFT Display:
 | DC       | GPIO1        | DC          | Data/Command |
 | RST      | GPIO0        | RST         | Reset |
 
-### Protobuf Transport (USB)
+### 📦 Protobuf Transport (USB)
 
 Firmware now accepts framed protobuf messages over the ESP32-C3 USB Serial/JTAG interface.
 
@@ -46,11 +46,11 @@ Firmware now accepts framed protobuf messages over the ESP32-C3 USB Serial/JTAG 
 
 Supported protobuf payloads for now:
 
-- `Ping`
-- `SetServo`
-- `LedAnimation`
-- `ShowIcon` (`cat1` / `cat2` / `cat3`)
-- `NotificationEvent` (mapped to LED + servo profile)
+- `Ping` 🏓
+- `SetServo` 🎯
+- `LedAnimation` 🌈
+- `ShowIcon` (`cat1` / `cat2` / `cat3`) 🐱
+- `NotificationEvent` (mapped to LED + servo profile) 🔔
 
 `NotificationEvent` now carries richer metadata:
 
@@ -74,18 +74,18 @@ Serial channel split:
 
 This separation prevents log bytes from corrupting framed protobuf traffic.
 
-### Notification Rendering
+### 🔔 Notification Rendering
 
 Incoming `NotificationEvent` messages now render a notification card on the LCD instead of only triggering background behavior.
 
-- WhatsApp/chat notifications: chat-style icon, green accent, sender name when available
-- Mail notifications: mail icon, blue accent
-- Calendar notifications: calendar icon, red accent
-- Other notifications: generic system icon and amber accent
+- 💬 WhatsApp/chat notifications: chat-style icon, green accent, sender name when available
+- 📧 Mail notifications: mail icon, blue accent
+- 📅 Calendar notifications: calendar icon, red accent
+- ⚙️ Other notifications: generic system icon and amber accent
 
 The robot also varies LED pattern and antenna target angle based on app/category in addition to urgency.
 
-### Unified Host Tool (GUI + Headless)
+### 🖥️ Unified Host Tool (GUI + Headless)
 
 The desktop host tooling is now unified in `host-gui/`.
 
