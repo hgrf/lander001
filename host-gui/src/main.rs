@@ -1074,7 +1074,7 @@ impl LanderGui {
                         }
                     }
                 }
-                return false;
+                false
             }
 
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
