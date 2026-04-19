@@ -949,6 +949,12 @@ struct LanderGui {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     _tray: Option<tray_item::TrayItem>,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        tray_status_id: Option<u32>,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        tray_connect_id: Option<u32>,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        last_tray_connected: Option<bool>,
 }
 
 impl Default for LanderGui {
@@ -969,6 +975,12 @@ impl Default for LanderGui {
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             _tray: None,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                tray_status_id: None,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                tray_connect_id: None,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                last_tray_connected: None,
         }
     }
 }
@@ -1030,7 +1042,9 @@ impl LanderGui {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn create_tray(controller: Arc<Mutex<SharedController>>) -> Result<tray_item::TrayItem> {
+    fn create_tray(
+        controller: Arc<Mutex<SharedController>>,
+    ) -> Result<(tray_item::TrayItem, u32, u32)> {
         use tray_item::{IconSource, TrayItem};
 
         fn is_dark_mode() -> bool {
@@ -1042,9 +1056,9 @@ impl LanderGui {
                 match output {
                     Ok(out) if out.status.success() => {
                         let text = String::from_utf8_lossy(&out.stdout);
-                        return text.trim().eq_ignore_ascii_case("dark");
+                        text.trim().eq_ignore_ascii_case("dark")
                     }
-                    _ => return false,
+                    _ => false,
                 }
             }
 
@@ -1113,88 +1127,113 @@ impl LanderGui {
         tray.add_label("lander001 running")
             .context("failed to add tray label")?;
 
+        let status_id = tray
+            .add_label_with_id("● Disconnected")
+            .context("failed to add tray status label")?;
+
         tray.add_label("Robot")
             .context("failed to add tray label")?;
 
         {
             let controller = Arc::clone(&controller);
-            tray.add_menu_item("Refresh ports", move || {
-                if let Ok(mut controller) = controller.lock() {
-                    controller.refresh_ports();
-                }
-            })
-            .context("failed to add tray menu item")?;
-        }
-
-        {
-            let controller = Arc::clone(&controller);
-            tray.add_menu_item("Connect / Disconnect", move || {
-                if let Ok(mut controller) = controller.lock() {
-                    if controller.is_connected() {
-                        controller.disconnect();
-                    } else {
-                        controller.connect();
+            let id = tray
+                .add_menu_item_with_id("Refresh ports", move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        controller.refresh_ports();
                     }
-                }
-            })
-            .context("failed to add tray menu item")?;
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(id, "arrow.clockwise");
         }
+
+        let connect_id = {
+            let controller = Arc::clone(&controller);
+            let id = tray
+                .add_menu_item_with_id("Connect", move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        if controller.is_connected() {
+                            controller.disconnect();
+                        } else {
+                            controller.connect();
+                        }
+                    }
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(id, "wifi");
+            id
+        };
 
         {
             let controller = Arc::clone(&controller);
-            tray.add_menu_item("Ping", move || {
-                if let Ok(mut controller) = controller.lock() {
-                    controller.send_ping();
-                }
-            })
-            .context("failed to add tray menu item")?;
+            let id = tray
+                .add_menu_item_with_id("Ping", move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        controller.send_ping();
+                    }
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut()
+                .set_item_sf_symbol(id, "antenna.radiowaves.left.and.right");
         }
 
         tray.add_label("Servo")
             .context("failed to add tray label")?;
         for angle in [0.0_f32, 90.0, 180.0, 270.0] {
             let controller = Arc::clone(&controller);
-            tray.add_menu_item(&format!("Set servo {:.0} deg", angle), move || {
-                if let Ok(mut controller) = controller.lock() {
-                    controller.send_servo(angle);
-                }
-            })
-            .context("failed to add tray menu item")?;
+            let id = tray
+                .add_menu_item_with_id(&format!("Set servo {:.0} deg", angle), move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        controller.send_servo(angle);
+                    }
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(id, "slider.horizontal.3");
         }
 
         tray.add_label("LED")
             .context("failed to add tray label")?;
         for pattern_id in 1..=4_u32 {
             let controller = Arc::clone(&controller);
-            tray.add_menu_item(&format!("Run LED pattern {} x3", pattern_id), move || {
-                if let Ok(mut controller) = controller.lock() {
-                    controller.send_led(pattern_id, 3);
-                }
-            })
-            .context("failed to add tray menu item")?;
+            let id = tray
+                .add_menu_item_with_id(&format!("Run LED pattern {} x3", pattern_id), move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        controller.send_led(pattern_id, 3);
+                    }
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(id, "lightbulb");
         }
 
         tray.add_label("Display")
             .context("failed to add tray label")?;
         for icon_id in ["cat1", "cat2", "cat3"] {
             let controller = Arc::clone(&controller);
-            tray.add_menu_item(&format!("Show {}", icon_id), move || {
-                if let Ok(mut controller) = controller.lock() {
-                    controller.send_icon(icon_id.to_string());
-                }
-            })
-            .context("failed to add tray menu item")?;
+            let id = tray
+                .add_menu_item_with_id(&format!("Show {}", icon_id), move || {
+                    if let Ok(mut controller) = controller.lock() {
+                        controller.send_icon(icon_id.to_string());
+                    }
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(id, "photo");
         }
 
-        tray.add_menu_item("Quit", || {
-            std::process::exit(0);
-        })
-        .context("failed to add tray menu item")?;
+        let quit_id = tray
+            .add_menu_item_with_id("Quit", || std::process::exit(0))
+            .context("failed to add tray menu item")?;
+        #[cfg(target_os = "macos")]
+        tray.inner_mut().set_item_sf_symbol(quit_id, "xmark.circle");
 
         #[cfg(target_os = "macos")]
         tray.inner_mut().display();
 
-        Ok(tray)
+        Ok((tray, status_id, connect_id))
     }
 }
 
@@ -1221,7 +1260,34 @@ impl eframe::App for LanderGui {
         visuals.widgets.open.bg_fill = egui::Color32::from_rgb(20, 40, 32);
         ctx.set_visuals(visuals);
 
-        // Snapshot shared state for this frame (short-lived lock).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let (Some(tray), Some(status_id), Some(connect_id)) = (
+            &mut self._tray,
+            self.tray_status_id,
+            self.tray_connect_id,
+        ) {
+            let (is_connected, port_name) = {
+                let ctrl = self.controller.lock().unwrap();
+                (ctrl.is_connected(), ctrl.conn.as_ref().map(|c| c.port_name.clone()))
+            };
+            if self.last_tray_connected != Some(is_connected) {
+                let status = if is_connected {
+                    format!("● Connected: {}", port_name.unwrap_or_default())
+                } else {
+                    "● Disconnected".to_string()
+                };
+                let _ = tray.set_item_label(status_id, &status);
+                let connect_label = if is_connected { "Disconnect" } else { "Connect" };
+                let _ = tray.set_item_label(connect_id, connect_label);
+                #[cfg(target_os = "macos")]
+                {
+                    let symbol = if is_connected { "wifi.slash" } else { "wifi" };
+                    tray.inner_mut().set_item_sf_symbol(connect_id, symbol);
+                }
+                self.last_tray_connected = Some(is_connected);
+            }
+        }
+
         let (connected, conn_port_name, ports, mut selected_port_idx, logs) = {
             let ctrl = self.controller.lock().unwrap();
             (
@@ -1332,7 +1398,10 @@ impl eframe::App for LanderGui {
                             ui.label("repeats");
                             ui.add(egui::DragValue::new(&mut self.led_repeats).range(1..=20));
                             if ui.button("Run").clicked() {
-                                self.controller.lock().unwrap().send_led(self.led_pattern, self.led_repeats);
+                                self.controller
+                                    .lock()
+                                    .unwrap()
+                                    .send_led(self.led_pattern, self.led_repeats);
                             }
                         });
 
@@ -1378,7 +1447,10 @@ impl eframe::App for LanderGui {
 
                         if ui.button("Send notification + fun animation").clicked() {
                             let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
-                            self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
+                            self.controller
+                                .lock()
+                                .unwrap()
+                                .send_notification_and_animation(&p, &f, &t);
                         }
                     });
                 });
@@ -1442,16 +1514,17 @@ fn main() -> Result<()> {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let controller = Arc::clone(&app.controller);
-                app._tray = match LanderGui::create_tray(controller) {
-                    Ok(tray) => {
+                match LanderGui::create_tray(controller) {
+                    Ok((tray, status_id, connect_id)) => {
                         eprintln!("tray: initialized");
-                        Some(tray)
+                        app._tray = Some(tray);
+                        app.tray_status_id = Some(status_id);
+                        app.tray_connect_id = Some(connect_id);
                     }
                     Err(err) => {
                         eprintln!("tray: failed to initialize tray icon: {}", err);
-                        None
                     }
-                };
+                }
             }
             Ok(Box::new(app))
         }),
