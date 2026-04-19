@@ -151,13 +151,13 @@ jobs:
             --icon-file AppDir/lander001-host-gui.png \
             --executable AppDir/usr/bin/lander001-host-gui
 
-          ./appimagetool.AppImage AppDir lander001-host-gui-linux-x86_64.AppImage
+          ./appimagetool.AppImage AppDir landerctl-${{ github.ref_name }}-linux-x86_64.AppImage
 
       - name: Upload Linux AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lander001-host-gui-linux-x86_64
-          path: lander001-host-gui-linux-x86_64.AppImage
+          name: landerctl-${{ github.ref_name }}-linux-x86_64
+          path: landerctl-${{ github.ref_name }}-linux-x86_64.AppImage
           if-no-files-found: error
 
   build-macos-app:
@@ -251,25 +251,25 @@ jobs:
 
       - name: Package app bundle
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" lander001-host-gui-macos-app.zip
+          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" landerctl-${{ github.ref_name }}-macos.zip
 
       - name: Notarize app bundle (optional)
         if: ${{ env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' && env.MACOS_CODESIGN_IDENTITY != '' }}
         run: |
-          xcrun notarytool submit "lander001-host-gui-macos-app.zip" \
+          xcrun notarytool submit "landerctl-${{ github.ref_name }}-macos.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
           xcrun stapler staple "dist/Lander001 Host GUI.app"
-          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" lander001-host-gui-macos-app.zip
+          ditto -c -k --sequesterRsrc --keepParent "dist/Lander001 Host GUI.app" landerctl-${{ github.ref_name }}-macos.zip
 
       - name: Upload macOS app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lander001-host-gui-macos-app
-          path: lander001-host-gui-macos-app.zip
+          name: landerctl-${{ github.ref_name }}-macos
+          path: landerctl-${{ github.ref_name }}-macos.zip
           if-no-files-found: error
 
   release:
@@ -284,16 +284,16 @@ jobs:
       - name: Download Linux AppImage artifact
         uses: actions/download-artifact@v4
         with:
-          name: lander001-host-gui-linux-x86_64
+          name: landerctl-${{ github.ref_name }}-linux-x86_64
 
       - name: Download macOS app artifact
         uses: actions/download-artifact@v4
         with:
-          name: lander001-host-gui-macos-app
+          name: landerctl-${{ github.ref_name }}-macos
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            lander001-host-gui-linux-x86_64.AppImage
-            lander001-host-gui-macos-app.zip
+            landerctl-${{ github.ref_name }}-linux-x86_64.AppImage
+            landerctl-${{ github.ref_name }}-macos.zip
