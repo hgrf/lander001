@@ -5,6 +5,8 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use std::sync::{Arc, Mutex};
+
 use anyhow::{anyhow, bail, Context, Result};
 use eframe::egui;
 use egui_phosphor::regular;
@@ -41,30 +43,34 @@ fn list_ports() -> Vec<String> {
     names
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-struct TrayRobotController {
+struct SharedController {
     ports: Vec<String>,
     selected_port_idx: usize,
     conn: Option<Connection>,
     next_msg_id: u32,
+    logs: Vec<String>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl Default for TrayRobotController {
+impl Default for SharedController {
     fn default() -> Self {
         Self {
             ports: list_ports(),
             selected_port_idx: 0,
             conn: None,
             next_msg_id: 1,
+            logs: Vec::new(),
         }
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl TrayRobotController {
-    fn log(&self, text: impl AsRef<str>) {
-        eprintln!("tray: {}", text.as_ref());
+impl SharedController {
+    fn log(&mut self, text: impl Into<String>) {
+        let ts = now_unix_ms();
+        self.logs.push(format!("[{}] {}", ts, text.into()));
+        if self.logs.len() > 200 {
+            let drop_count = self.logs.len() - 200;
+            self.logs.drain(0..drop_count);
+        }
     }
 
     fn selected_port_name(&self) -> Option<&str> {
@@ -75,14 +81,6 @@ impl TrayRobotController {
         self.conn.is_some()
     }
 
-    fn refresh_ports(&mut self) {
-        self.ports = list_ports();
-        if self.selected_port_idx >= self.ports.len() {
-            self.selected_port_idx = 0;
-        }
-        self.log(format!("found {} serial port(s)", self.ports.len()));
-    }
-
     fn with_conn<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut Self, &mut Connection) -> Result<()>,
@@ -91,41 +89,49 @@ impl TrayRobotController {
             let result = f(self, &mut conn);
             self.conn = Some(conn);
             if let Err(err) = result {
-                self.log(format!("error: {}", err));
+                self.log(format!("Error: {}", err));
             }
         } else {
-            self.log("not connected");
+            self.log("Not connected");
         }
+    }
+
+    fn refresh_ports(&mut self) {
+        self.ports = list_ports();
+        if self.selected_port_idx >= self.ports.len() {
+            self.selected_port_idx = 0;
+        }
+        self.log(format!("Found {} serial port(s)", self.ports.len()));
     }
 
     fn connect(&mut self) {
         if self.conn.is_some() {
-            self.log("already connected");
+            self.log("Already connected");
             return;
         }
 
         self.refresh_ports();
 
         let Some(port_name) = self.selected_port_name().map(str::to_string) else {
-            self.log("no serial port selected");
+            self.log("No serial port selected");
             return;
         };
 
         match Connection::new(port_name.clone()) {
             Ok(conn) => {
                 self.conn = Some(conn);
-                self.log(format!("connected to {}", port_name));
+                self.log(format!("Connected to {}", port_name));
                 self.send_ping();
             }
-            Err(err) => self.log(format!("failed to connect: {}", err)),
+            Err(err) => self.log(format!("Failed to connect: {}", err)),
         }
     }
 
     fn disconnect(&mut self) {
         if let Some(conn) = self.conn.take() {
-            self.log(format!("disconnected from {}", conn.port_name));
+            self.log(format!("Disconnected from {}", conn.port_name));
         } else {
-            self.log("already disconnected");
+            self.log("Already disconnected");
         }
     }
 
@@ -153,10 +159,44 @@ impl TrayRobotController {
         });
     }
 
-    fn send_icon(&mut self, icon_id: &'static str) {
+    fn send_icon(&mut self, icon_id: String) {
         self.with_conn(|this, conn| {
-            send_icon_message(conn, &mut this.next_msg_id, icon_id)?;
+            send_icon_message(conn, &mut this.next_msg_id, &icon_id)?;
             this.log(format!("ShowIcon '{}' ACKed", icon_id));
+            Ok(())
+        });
+    }
+
+    fn send_notification_and_animation(&mut self, preset: &str, from: &str, text: &str) {
+        let (source_app, source_bundle_id, category, title, sender_name, app_icon_hint) =
+            default_notification_for_preset(preset, from, text);
+        let preset = preset.to_string();
+        let text = text.to_string();
+
+        self.with_conn(|this, conn| {
+            let notif_id = this.next_msg_id;
+            send_notification_message(
+                conn,
+                &mut this.next_msg_id,
+                pb::NotificationEvent {
+                    id: format!("gui-{}-{}", preset, notif_id),
+                    source_app: source_app.clone(),
+                    title: title.clone(),
+                    body: text.clone(),
+                    urgency: pb::Urgency::Normal as i32,
+                    category,
+                    source_bundle_id: source_bundle_id.clone(),
+                    sender_name: sender_name.clone(),
+                    sender_handle: String::new(),
+                    app_icon_hint: app_icon_hint.clone(),
+                },
+            )?;
+            this.log(format!("Notification '{}' ACKed", source_app));
+            Ok(())
+        });
+
+        self.with_conn(|this, conn| {
+            send_notification_animation(conn, &mut this.next_msg_id, category)?;
             Ok(())
         });
     }
@@ -894,11 +934,7 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
 }
 
 struct LanderGui {
-    ports: Vec<String>,
-    selected_port_idx: usize,
-    conn: Option<Connection>,
-    next_msg_id: u32,
-    logs: Vec<String>,
+    controller: Arc<Mutex<SharedController>>,
 
     servo_angle: f32,
     led_pattern: u32,
@@ -917,13 +953,8 @@ struct LanderGui {
 
 impl Default for LanderGui {
     fn default() -> Self {
-        let ports = list_ports();
         Self {
-            ports,
-            selected_port_idx: 0,
-            conn: None,
-            next_msg_id: 1,
-            logs: Vec::new(),
+            controller: Arc::new(Mutex::new(SharedController::default())),
 
             servo_angle: 90.0,
             led_pattern: 2,
@@ -999,8 +1030,7 @@ impl LanderGui {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn create_tray() -> Result<tray_item::TrayItem> {
-        use std::sync::{Arc, Mutex};
+    fn create_tray(controller: Arc<Mutex<SharedController>>) -> Result<tray_item::TrayItem> {
         use tray_item::{IconSource, TrayItem};
 
         fn is_macos_dark_mode() -> bool {
@@ -1044,8 +1074,6 @@ impl LanderGui {
             },
         )
         .context("failed to create tray icon")?;
-
-        let controller = Arc::new(Mutex::new(TrayRobotController::default()));
 
         tray.add_label("lander001 running")
             .context("failed to add tray label")?;
@@ -1117,7 +1145,7 @@ impl LanderGui {
             let controller = Arc::clone(&controller);
             tray.add_menu_item(&format!("Show {}", icon_id), move || {
                 if let Ok(mut controller) = controller.lock() {
-                    controller.send_icon(icon_id);
+                    controller.send_icon(icon_id.to_string());
                 }
             })
             .context("failed to add tray menu item")?;
@@ -1132,128 +1160,6 @@ impl LanderGui {
         tray.inner_mut().display();
 
         Ok(tray)
-    }
-
-    fn selected_port_name(&self) -> Option<&str> {
-        self.ports.get(self.selected_port_idx).map(String::as_str)
-    }
-
-    fn log(&mut self, text: impl Into<String>) {
-        let ts = now_unix_ms();
-        self.logs.push(format!("[{}] {}", ts, text.into()));
-        if self.logs.len() > 200 {
-            let drop_count = self.logs.len() - 200;
-            self.logs.drain(0..drop_count);
-        }
-    }
-
-    fn with_conn<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&mut Self, &mut Connection) -> Result<()>,
-    {
-        if let Some(mut conn) = self.conn.take() {
-            let result = f(self, &mut conn);
-            self.conn = Some(conn);
-            if let Err(err) = result {
-                self.log(format!("Error: {}", err));
-            }
-        } else {
-            self.log("Not connected");
-        }
-    }
-
-    fn send_ping(&mut self) {
-        self.with_conn(|this, conn| {
-            send_ping_message(conn, &mut this.next_msg_id)?;
-            this.log("Ping ACKed");
-            Ok(())
-        });
-    }
-
-    fn send_servo(&mut self, angle_deg: f32) {
-        self.with_conn(|this, conn| {
-            send_servo_message(conn, &mut this.next_msg_id, angle_deg)?;
-            this.log(format!("SetServo {:.1} deg ACKed", angle_deg));
-            Ok(())
-        });
-    }
-
-    fn send_led(&mut self, pattern_id: u32, repeats: u32) {
-        self.with_conn(|this, conn| {
-            send_led_message(conn, &mut this.next_msg_id, pattern_id, repeats)?;
-            this.log(format!("LedAnimation p={} r={} ACKed", pattern_id, repeats));
-            Ok(())
-        });
-    }
-
-    fn send_icon(&mut self, icon_id: String) {
-        self.with_conn(|this, conn| {
-            send_icon_message(conn, &mut this.next_msg_id, &icon_id)?;
-            this.log(format!("ShowIcon '{}' ACKed", icon_id));
-            Ok(())
-        });
-    }
-
-    fn send_notification_and_animation(&mut self) {
-        let preset = self.preset.clone();
-        let from = self.from.clone();
-        let text = self.text.clone();
-        let (source_app, source_bundle_id, category, title, sender_name, app_icon_hint) =
-            default_notification_for_preset(&preset, &from, &text);
-
-        self.with_conn(|this, conn| {
-            let notif_id = this.next_msg_id;
-            send_notification_message(
-                conn,
-                &mut this.next_msg_id,
-                pb::NotificationEvent {
-                    id: format!("gui-{}-{}", preset, notif_id),
-                    source_app: source_app.clone(),
-                    title: title.clone(),
-                    body: text.clone(),
-                    urgency: pb::Urgency::Normal as i32,
-                    category,
-                    source_bundle_id: source_bundle_id.clone(),
-                    sender_name: sender_name.clone(),
-                    sender_handle: String::new(),
-                    app_icon_hint: app_icon_hint.clone(),
-                },
-            )?;
-            this.log(format!("Notification '{}' ACKed", source_app));
-            Ok(())
-        });
-
-        self.with_conn(|this, conn| {
-            send_notification_animation(conn, &mut this.next_msg_id, category)?;
-            Ok(())
-        });
-    }
-
-    fn connect(&mut self) {
-        if self.conn.is_some() {
-            self.log("Already connected");
-            return;
-        }
-
-        let Some(port_name) = self.selected_port_name().map(str::to_string) else {
-            self.log("No serial port selected");
-            return;
-        };
-
-        match Connection::new(port_name.clone()) {
-            Ok(conn) => {
-                self.conn = Some(conn);
-                self.log(format!("Connected to {}", port_name));
-                self.send_ping();
-            }
-            Err(err) => self.log(format!("Failed to connect: {}", err)),
-        }
-    }
-
-    fn disconnect(&mut self) {
-        if let Some(conn) = self.conn.take() {
-            self.log(format!("Disconnected from {}", conn.port_name));
-        }
     }
 }
 
@@ -1280,6 +1186,18 @@ impl eframe::App for LanderGui {
         visuals.widgets.open.bg_fill = egui::Color32::from_rgb(20, 40, 32);
         ctx.set_visuals(visuals);
 
+        // Snapshot shared state for this frame (short-lived lock).
+        let (connected, conn_port_name, ports, mut selected_port_idx, logs) = {
+            let ctrl = self.controller.lock().unwrap();
+            (
+                ctrl.conn.is_some(),
+                ctrl.conn.as_ref().map(|c| c.port_name.clone()),
+                ctrl.ports.clone(),
+                ctrl.selected_port_idx,
+                ctrl.logs.clone(),
+            )
+        };
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(texture) = &self.app_icon_texture {
@@ -1289,8 +1207,8 @@ impl eframe::App for LanderGui {
                 ui.heading("lander001 control");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(conn) = &self.conn {
-                        ui.label(format!("connected: {}", conn.port_name));
+                    if let Some(ref port_name) = conn_port_name {
+                        ui.label(format!("connected: {}", port_name));
                         ui.colored_label(egui::Color32::from_rgb(40, 220, 120), "●");
                     } else {
                         ui.label("disconnected");
@@ -1304,7 +1222,6 @@ impl eframe::App for LanderGui {
             .resizable(true)
             .default_width(340.0)
             .show(ctx, |ui| {
-                let connected = self.conn.is_some();
                 ui.add_space(10.0);
 
                 ui.group(|ui| {
@@ -1316,40 +1233,41 @@ impl eframe::App for LanderGui {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Refresh ports").clicked() {
-                            self.ports = list_ports();
-                            if self.selected_port_idx >= self.ports.len() {
-                                self.selected_port_idx = 0;
-                            }
-                            self.log(format!("Found {} serial port(s)", self.ports.len()));
+                            self.controller.lock().unwrap().refresh_ports();
                         }
 
-                        if self.conn.is_none() {
+                        if !connected {
                             if ui.button("Connect").clicked() {
-                                self.connect();
+                                self.controller.lock().unwrap().connect();
                             }
                         } else if ui.button("Disconnect").clicked() {
-                            self.disconnect();
+                            self.controller.lock().unwrap().disconnect();
                         }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Serial port");
+                        let old_idx = selected_port_idx;
                         egui::ComboBox::from_id_salt("serial_port_combo")
                             .selected_text(
-                                self.selected_port_name()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| "(none)".to_string()),
+                                ports
+                                    .get(selected_port_idx)
+                                    .map(String::as_str)
+                                    .unwrap_or("(none)"),
                             )
                             .show_ui(ui, |ui| {
-                                for (idx, name) in self.ports.iter().enumerate() {
-                                    ui.selectable_value(&mut self.selected_port_idx, idx, name);
+                                for (idx, name) in ports.iter().enumerate() {
+                                    ui.selectable_value(&mut selected_port_idx, idx, name);
                                 }
                             });
+                        if selected_port_idx != old_idx {
+                            self.controller.lock().unwrap().selected_port_idx = selected_port_idx;
+                        }
                     });
 
                     ui.add_enabled_ui(connected, |ui| {
                         if ui.button("Ping").clicked() {
-                            self.send_ping();
+                            self.controller.lock().unwrap().send_ping();
                         }
                     });
                 });
@@ -1369,7 +1287,7 @@ impl eframe::App for LanderGui {
                             ui.label("Servo");
                             ui.add(egui::Slider::new(&mut self.servo_angle, 0.0..=270.0).suffix(" deg"));
                             if ui.button("Send").clicked() {
-                                self.send_servo(self.servo_angle);
+                                self.controller.lock().unwrap().send_servo(self.servo_angle);
                             }
                         });
 
@@ -1379,7 +1297,7 @@ impl eframe::App for LanderGui {
                             ui.label("repeats");
                             ui.add(egui::DragValue::new(&mut self.led_repeats).range(1..=20));
                             if ui.button("Run").clicked() {
-                                self.send_led(self.led_pattern, self.led_repeats);
+                                self.controller.lock().unwrap().send_led(self.led_pattern, self.led_repeats);
                             }
                         });
 
@@ -1387,7 +1305,7 @@ impl eframe::App for LanderGui {
                             ui.label("Icon");
                             ui.text_edit_singleline(&mut self.icon_id);
                             if ui.button("Show").clicked() {
-                                self.send_icon(self.icon_id.clone());
+                                self.controller.lock().unwrap().send_icon(self.icon_id.clone());
                             }
                         });
                     });
@@ -1424,7 +1342,8 @@ impl eframe::App for LanderGui {
                         });
 
                         if ui.button("Send notification + fun animation").clicked() {
-                            self.send_notification_and_animation();
+                            let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
+                            self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
                         }
                     });
                 });
@@ -1435,7 +1354,7 @@ impl eframe::App for LanderGui {
             ui.separator();
 
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for line in &self.logs {
+                for line in &logs {
                     ui.label(line);
                 }
             });
@@ -1487,7 +1406,8 @@ fn main() -> Result<()> {
             };
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                app._tray = match LanderGui::create_tray() {
+                let controller = Arc::clone(&app.controller);
+                app._tray = match LanderGui::create_tray(controller) {
                     Ok(tray) => {
                         eprintln!("tray: initialized");
                         Some(tray)
