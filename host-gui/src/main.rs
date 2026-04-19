@@ -326,7 +326,7 @@ Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppI
 
     #[cfg(target_os = "linux")]
     loop {
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::park();
     }
 
     #[allow(unreachable_code)]
