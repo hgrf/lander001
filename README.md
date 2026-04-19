@@ -2,6 +2,8 @@
 
 ![lander001](doc/images/lander_cover.png)
 
+> **Credit:** The lander sculpture is inspired by [Mohit Boite](https://bhoite.com/sculptures/)'s admittedly much prettier models.
+
 > **Disclaimer:** This project is mostly vibe-coded with [GitHub Copilot](https://github.com/features/copilot). Expect creative architecture decisions, occasional hallucinated APIs, and a general sense that the robot knows more than it lets on.
 
 **lander001** is a small desk robot that reacts to your computer's notifications in real time. It runs on an ESP32-C3 and communicates with a host bridge over USB using a framed protobuf protocol. When a notification arrives — a message, an email, a calendar reminder — the robot lights up its LEDs, swings its servo-controlled antenna, and renders a notification card on its 240×240 TFT display, with app-specific icons and sender details.
