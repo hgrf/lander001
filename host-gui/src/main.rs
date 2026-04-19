@@ -41,7 +41,7 @@ fn list_ports() -> Vec<String> {
     names
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct TrayRobotController {
     ports: Vec<String>,
     selected_port_idx: usize,
@@ -49,7 +49,7 @@ struct TrayRobotController {
     next_msg_id: u32,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Default for TrayRobotController {
     fn default() -> Self {
         Self {
@@ -61,7 +61,7 @@ impl Default for TrayRobotController {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TrayRobotController {
     fn log(&self, text: impl AsRef<str>) {
         eprintln!("tray: {}", text.as_ref());
@@ -162,11 +162,20 @@ impl TrayRobotController {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_tray_mode(mut args: Vec<String>) -> Result<()> {
     use std::sync::{Arc, Mutex};
 
     use tray_item::{IconSource, TrayItem};
+
+    #[cfg(target_os = "linux")]
+    fn print_linux_tray_hint(err: &anyhow::Error) {
+        eprintln!("tray: {}", err);
+        eprintln!(
+            "tray hint (linux): no tray host detected or D-Bus status notifier unavailable. \
+Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppIndicator extension)."
+        );
+    }
 
     fn is_macos_dark_mode() -> bool {
         let output = std::process::Command::new("defaults")
@@ -190,11 +199,16 @@ fn run_tray_mode(mut args: Vec<String>) -> Result<()> {
         }
     });
 
+    #[cfg(target_os = "macos")]
     let tray_icon_bytes = if is_macos_dark_mode() {
         include_bytes!("../../assets/gui/tray_satellite_dark.png").to_vec()
     } else {
         include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec()
     };
+
+    #[cfg(target_os = "linux")]
+    let tray_icon_bytes = include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec();
+
     let tray_icon_img = image::load_from_memory(&tray_icon_bytes)
         .context("failed to decode tray satellite icon")?;
 
@@ -206,7 +220,12 @@ fn run_tray_mode(mut args: Vec<String>) -> Result<()> {
             data: tray_icon_bytes,
         },
     )
-    .context("failed to create tray icon")?;
+    .context("failed to create tray icon")
+    .map_err(|err| {
+        #[cfg(target_os = "linux")]
+        print_linux_tray_hint(&err);
+        err
+    })?;
 
     let controller = Arc::new(Mutex::new(TrayRobotController::default()));
 
@@ -305,9 +324,9 @@ fn run_tray_mode(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn run_tray_mode(_args: Vec<String>) -> Result<()> {
-    bail!("--tray is currently implemented for macOS in this build")
+    bail!("--tray is currently implemented for macOS and Linux in this build")
 }
 
 fn now_unix_ms() -> u64 {
