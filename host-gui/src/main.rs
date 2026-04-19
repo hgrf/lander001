@@ -1033,20 +1033,51 @@ impl LanderGui {
     fn create_tray(controller: Arc<Mutex<SharedController>>) -> Result<tray_item::TrayItem> {
         use tray_item::{IconSource, TrayItem};
 
-        fn is_macos_dark_mode() -> bool {
-            let output = std::process::Command::new("defaults")
-                .args(["read", "-g", "AppleInterfaceStyle"])
-                .output();
-            match output {
-                Ok(out) if out.status.success() => {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    text.trim().eq_ignore_ascii_case("dark")
+        fn is_dark_mode() -> bool {
+            #[cfg(target_os = "macos")]
+            {
+                let output = std::process::Command::new("defaults")
+                    .args(["read", "-g", "AppleInterfaceStyle"])
+                    .output();
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        return text.trim().eq_ignore_ascii_case("dark");
+                    }
+                    _ => return false,
                 }
-                _ => false,
             }
+
+            #[cfg(target_os = "linux")]
+            {
+                // GNOME 42+: check color-scheme setting
+                let output = std::process::Command::new("gsettings")
+                    .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+                    .output();
+                if let Ok(out) = output {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    if text.trim().contains("dark") {
+                        return true;
+                    }
+                }
+                // Fallback: check gtk-theme name
+                let output = std::process::Command::new("gsettings")
+                    .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+                    .output();
+                if let Ok(out) = output {
+                    let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                    if text.contains("dark") {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            false
         }
 
-        let tray_icon_bytes = if is_macos_dark_mode() {
+        let tray_icon_bytes = if is_dark_mode() {
             include_bytes!("../../assets/gui/tray_satellite_dark.png").to_vec()
         } else {
             include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec()
