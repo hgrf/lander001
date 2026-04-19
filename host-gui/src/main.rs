@@ -1136,7 +1136,7 @@ impl LanderGui {
 
         {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id("Refresh ports", move || {
                     if let Ok(mut controller) = controller.lock() {
                         controller.refresh_ports();
@@ -1144,12 +1144,12 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(id, "arrow.clockwise");
+            tray.inner_mut().set_item_sf_symbol(_id, "arrow.clockwise");
         }
 
         let connect_id = {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id("Connect", move || {
                     if let Ok(mut controller) = controller.lock() {
                         if controller.is_connected() {
@@ -1161,13 +1161,13 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(id, "wifi");
-            id
+            tray.inner_mut().set_item_sf_symbol(_id, "wifi");
+            _id
         };
 
         {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id("Ping", move || {
                     if let Ok(mut controller) = controller.lock() {
                         controller.send_ping();
@@ -1176,14 +1176,14 @@ impl LanderGui {
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
             tray.inner_mut()
-                .set_item_sf_symbol(id, "antenna.radiowaves.left.and.right");
+                .set_item_sf_symbol(_id, "antenna.radiowaves.left.and.right");
         }
 
         tray.add_label("Servo")
             .context("failed to add tray label")?;
         for angle in [0.0_f32, 90.0, 180.0, 270.0] {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id(&format!("Set servo {:.0} deg", angle), move || {
                     if let Ok(mut controller) = controller.lock() {
                         controller.send_servo(angle);
@@ -1191,14 +1191,14 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(id, "slider.horizontal.3");
+            tray.inner_mut().set_item_sf_symbol(_id, "slider.horizontal.3");
         }
 
         tray.add_label("LED")
             .context("failed to add tray label")?;
         for pattern_id in 1..=4_u32 {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id(&format!("Run LED pattern {} x3", pattern_id), move || {
                     if let Ok(mut controller) = controller.lock() {
                         controller.send_led(pattern_id, 3);
@@ -1206,14 +1206,14 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(id, "lightbulb");
+            tray.inner_mut().set_item_sf_symbol(_id, "lightbulb");
         }
 
         tray.add_label("Display")
             .context("failed to add tray label")?;
         for icon_id in ["cat1", "cat2", "cat3"] {
             let controller = Arc::clone(&controller);
-            let id = tray
+            let _id = tray
                 .add_menu_item_with_id(&format!("Show {}", icon_id), move || {
                     if let Ok(mut controller) = controller.lock() {
                         controller.send_icon(icon_id.to_string());
@@ -1221,14 +1221,14 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(id, "photo");
+            tray.inner_mut().set_item_sf_symbol(_id, "photo");
         }
 
-        let quit_id = tray
+        let _quit_id = tray
             .add_menu_item_with_id("Quit", || std::process::exit(0))
             .context("failed to add tray menu item")?;
         #[cfg(target_os = "macos")]
-        tray.inner_mut().set_item_sf_symbol(quit_id, "xmark.circle");
+        tray.inner_mut().set_item_sf_symbol(_quit_id, "xmark.circle");
 
         #[cfg(target_os = "macos")]
         tray.inner_mut().display();
