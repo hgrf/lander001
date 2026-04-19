@@ -222,10 +222,9 @@ Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppI
         },
     )
     .context("failed to create tray icon")
-    .map_err(|err| {
+    .inspect_err(|err| {
         #[cfg(target_os = "linux")]
-        print_linux_tray_hint(&err);
-        err
+        print_linux_tray_hint(err);
     })?;
 
     let controller = Arc::new(Mutex::new(TrayRobotController::default()));
