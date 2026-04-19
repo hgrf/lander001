@@ -114,7 +114,7 @@ cargo run -- --nogui
 Optional background-style headless launch (no window):
 
 ```sh
-cargo run -- --background --macos-monitor /dev/cu.usbmodemXXXX
+cargo run -- --background /dev/cu.usbmodemXXXX
 ```
 
 Optionally pass a serial port explicitly:
@@ -143,19 +143,13 @@ Burst simulation:
 cargo run -- --nogui --simulate whatsapp --from "Bob" --text "Ping!" --count 5 --interval-ms 800
 ```
 
-Linux live notification forwarding mode (Ubuntu etc.):
+Live notification forwarding mode (forwards desktop notifications to the robot by default):
 
 ```sh
-cargo run -- --nogui --linux-monitor /dev/ttyACM0
+cargo run -- --nogui /dev/ttyACM0
 ```
 
-This mode uses `dbus-monitor` to observe `org.freedesktop.Notifications.Notify` calls and forwards them as protobuf `NotificationEvent` messages, waiting for an ACK after each send.
-
-macOS live notification forwarding mode:
-
-```sh
-cargo run -- --nogui --macos-monitor /dev/cu.usbmodemXXXX
-```
+On Linux, this uses `dbus-monitor` to observe `org.freedesktop.Notifications.Notify` calls and forwards them as protobuf `NotificationEvent` messages, waiting for an ACK after each send.
 
 Firmware builds are now explicit instead of being forced globally through Cargo config. Use:
 
