@@ -177,6 +177,7 @@ Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppI
         );
     }
 
+    #[cfg(target_os = "macos")]
     fn is_macos_dark_mode() -> bool {
         let output = std::process::Command::new("defaults")
             .args(["read", "-g", "AppleInterfaceStyle"])
@@ -320,7 +321,15 @@ Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppI
     })
     .context("failed to add tray menu item")?;
 
+    #[cfg(target_os = "macos")]
     tray.inner_mut().display();
+
+    #[cfg(target_os = "linux")]
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    #[allow(unreachable_code)]
     Ok(())
 }
 
