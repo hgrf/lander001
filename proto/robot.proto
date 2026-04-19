@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package rustyface;
+
+enum Urgency {
+  URGENCY_LOW = 0;
+  URGENCY_NORMAL = 1;
+  URGENCY_HIGH = 2;
+  URGENCY_CRITICAL = 3;
+}
+
+enum Category {
+  CATEGORY_UNSPECIFIED = 0;
+  CATEGORY_MAIL = 1;
+  CATEGORY_CHAT = 2;
+  CATEGORY_SYSTEM = 3;
+  CATEGORY_CALENDAR = 4;
+}
+
+message NotificationEvent {
+  string id = 1;
+  string source_app = 2;
+  string title = 3;
+  string body = 4;
+  Urgency urgency = 5;
+  Category category = 6;
+  string source_bundle_id = 7;
+  string sender_name = 8;
+  string sender_handle = 9;
+  string app_icon_hint = 10;
+}
+
+message SetServo {
+  float angle_deg = 1;
+}
+
+message LedAnimation {
+  uint32 pattern_id = 1;
+  uint32 repeats = 2;
+}
+
+message ShowIcon {
+  string icon_id = 1;
+}
+
+message IconChunk {
+  string icon_id = 1;
+  uint32 chunk_index = 2;
+  uint32 total_chunks = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  bytes rgb565_le = 6;
+}
+
+message Ping {
+  uint64 unix_ms = 1;
+}
+
+message Ack {
+  uint32 msg_id = 1;
+  bool ok = 2;
+  string error = 3;
+}
+
+message WireMessage {
+  uint32 msg_id = 1;
+  oneof payload {
+    NotificationEvent notification = 10;
+    SetServo set_servo = 11;
+    LedAnimation led_animation = 12;
+    ShowIcon show_icon = 13;
+    IconChunk icon_chunk = 14;
+    Ping ping = 15;
+    Ack ack = 16;
+  }
+}
