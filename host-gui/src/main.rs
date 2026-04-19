@@ -162,192 +162,6 @@ impl TrayRobotController {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_tray_mode(mut args: Vec<String>) -> Result<()> {
-    use std::sync::{Arc, Mutex};
-
-    use tray_item::{IconSource, TrayItem};
-
-    #[cfg(target_os = "linux")]
-    fn print_linux_tray_hint(err: &anyhow::Error) {
-        eprintln!("tray: {}", err);
-        eprintln!(
-            "tray hint (linux): no tray host detected or D-Bus status notifier unavailable. \
-Try running under a desktop session with a system tray (e.g. Ubuntu GNOME + AppIndicator extension)."
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    fn is_macos_dark_mode() -> bool {
-        let output = std::process::Command::new("defaults")
-            .args(["read", "-g", "AppleInterfaceStyle"])
-            .output();
-
-        match output {
-            Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                text.trim().eq_ignore_ascii_case("dark")
-            }
-            _ => false,
-        }
-    }
-
-    args.retain(|a| a != "--tray" && a != "--background" && a != "--gui");
-
-    std::thread::spawn(move || {
-        if let Err(err) = run_with_args(args) {
-            eprintln!("headless bridge error: {}", err);
-        }
-    });
-
-    #[cfg(target_os = "macos")]
-    let tray_icon_bytes = if is_macos_dark_mode() {
-        include_bytes!("../../assets/gui/tray_satellite_dark.png").to_vec()
-    } else {
-        include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec()
-    };
-
-    #[cfg(target_os = "linux")]
-    let tray_icon_bytes = include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec();
-
-    let tray_icon_img = image::load_from_memory(&tray_icon_bytes)
-        .context("failed to decode tray satellite icon")?;
-
-    // ksni (Linux) requires raw ARGB32 pixels in network byte order; macOS
-    // uses NSImage which can decode PNG bytes directly.
-    #[cfg(target_os = "linux")]
-    let tray_icon_data = tray_icon_img
-        .to_rgba8()
-        .pixels()
-        .flat_map(|p| [p[3], p[0], p[1], p[2]])
-        .collect::<Vec<u8>>();
-    #[cfg(target_os = "macos")]
-    let tray_icon_data = tray_icon_bytes;
-
-    let mut tray = TrayItem::new(
-        "lander001",
-        IconSource::Data {
-            height: tray_icon_img.height() as i32,
-            width: tray_icon_img.width() as i32,
-            data: tray_icon_data,
-        },
-    )
-    .context("failed to create tray icon")
-    .inspect_err(|err| {
-        #[cfg(target_os = "linux")]
-        print_linux_tray_hint(err);
-    })?;
-
-    let controller = Arc::new(Mutex::new(TrayRobotController::default()));
-
-    tray.add_label("lander001 running")
-        .context("failed to add tray label")?;
-
-    {
-        let gui_exe = std::env::current_exe().context("failed to locate current executable")?;
-        tray.add_menu_item("Open GUI", move || {
-            if let Err(err) = std::process::Command::new(&gui_exe).arg("--gui").spawn() {
-                eprintln!("tray: failed to launch GUI: {}", err);
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    tray.add_label("Robot")
-        .context("failed to add tray label")?;
-
-    {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item("Refresh ports", move || {
-            if let Ok(mut controller) = controller.lock() {
-                controller.refresh_ports();
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item("Connect / Disconnect", move || {
-            if let Ok(mut controller) = controller.lock() {
-                if controller.is_connected() {
-                    controller.disconnect();
-                } else {
-                    controller.connect();
-                }
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item("Ping", move || {
-            if let Ok(mut controller) = controller.lock() {
-                controller.send_ping();
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    tray.add_label("Servo")
-        .context("failed to add tray label")?;
-    for angle in [0.0_f32, 90.0, 180.0, 270.0] {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item(&format!("Set servo {:.0} deg", angle), move || {
-            if let Ok(mut controller) = controller.lock() {
-                controller.send_servo(angle);
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    tray.add_label("LED")
-        .context("failed to add tray label")?;
-    for pattern_id in 1..=4_u32 {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item(&format!("Run LED pattern {} x3", pattern_id), move || {
-            if let Ok(mut controller) = controller.lock() {
-                controller.send_led(pattern_id, 3);
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    tray.add_label("Display")
-        .context("failed to add tray label")?;
-    for icon_id in ["cat1", "cat2", "cat3"] {
-        let controller = Arc::clone(&controller);
-        tray.add_menu_item(&format!("Show {}", icon_id), move || {
-            if let Ok(mut controller) = controller.lock() {
-                controller.send_icon(icon_id);
-            }
-        })
-        .context("failed to add tray menu item")?;
-    }
-
-    tray.add_menu_item("Quit", || {
-        std::process::exit(0);
-    })
-    .context("failed to add tray menu item")?;
-
-    #[cfg(target_os = "macos")]
-    tray.inner_mut().display();
-
-    #[cfg(target_os = "linux")]
-    loop {
-        std::thread::park();
-    }
-
-    #[allow(unreachable_code)]
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn run_tray_mode(_args: Vec<String>) -> Result<()> {
-    bail!("--tray is currently implemented for macOS and Linux in this build")
-}
-
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1096,6 +910,9 @@ struct LanderGui {
     text: String,
 
     app_icon_texture: Option<egui::TextureHandle>,
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    _tray: Option<tray_item::TrayItem>,
 }
 
 impl Default for LanderGui {
@@ -1118,6 +935,9 @@ impl Default for LanderGui {
             text: "Please review PR #23".to_string(),
 
             app_icon_texture: None,
+
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            _tray: None,
         }
     }
 }
@@ -1176,6 +996,142 @@ impl LanderGui {
             color_image,
             egui::TextureOptions::LINEAR,
         ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn create_tray() -> Result<tray_item::TrayItem> {
+        use std::sync::{Arc, Mutex};
+        use tray_item::{IconSource, TrayItem};
+
+        fn is_macos_dark_mode() -> bool {
+            let output = std::process::Command::new("defaults")
+                .args(["read", "-g", "AppleInterfaceStyle"])
+                .output();
+            match output {
+                Ok(out) if out.status.success() => {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    text.trim().eq_ignore_ascii_case("dark")
+                }
+                _ => false,
+            }
+        }
+
+        let tray_icon_bytes = if is_macos_dark_mode() {
+            include_bytes!("../../assets/gui/tray_satellite_dark.png").to_vec()
+        } else {
+            include_bytes!("../../assets/gui/tray_satellite_light.png").to_vec()
+        };
+        let tray_icon_img = image::load_from_memory(&tray_icon_bytes)
+            .context("failed to decode tray satellite icon")?;
+
+        // ksni (Linux) requires raw ARGB32 pixels in network byte order; macOS
+        // uses NSImage which can decode PNG bytes directly.
+        #[cfg(target_os = "linux")]
+        let tray_icon_data = tray_icon_img
+            .to_rgba8()
+            .pixels()
+            .flat_map(|p| [p[3], p[0], p[1], p[2]])
+            .collect::<Vec<u8>>();
+        #[cfg(target_os = "macos")]
+        let tray_icon_data = tray_icon_bytes;
+
+        let mut tray = TrayItem::new(
+            "lander001",
+            IconSource::Data {
+                height: tray_icon_img.height() as i32,
+                width: tray_icon_img.width() as i32,
+                data: tray_icon_data,
+            },
+        )
+        .context("failed to create tray icon")?;
+
+        let controller = Arc::new(Mutex::new(TrayRobotController::default()));
+
+        tray.add_label("lander001 running")
+            .context("failed to add tray label")?;
+
+        tray.add_label("Robot")
+            .context("failed to add tray label")?;
+
+        {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item("Refresh ports", move || {
+                if let Ok(mut controller) = controller.lock() {
+                    controller.refresh_ports();
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item("Connect / Disconnect", move || {
+                if let Ok(mut controller) = controller.lock() {
+                    if controller.is_connected() {
+                        controller.disconnect();
+                    } else {
+                        controller.connect();
+                    }
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item("Ping", move || {
+                if let Ok(mut controller) = controller.lock() {
+                    controller.send_ping();
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        tray.add_label("Servo")
+            .context("failed to add tray label")?;
+        for angle in [0.0_f32, 90.0, 180.0, 270.0] {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item(&format!("Set servo {:.0} deg", angle), move || {
+                if let Ok(mut controller) = controller.lock() {
+                    controller.send_servo(angle);
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        tray.add_label("LED")
+            .context("failed to add tray label")?;
+        for pattern_id in 1..=4_u32 {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item(&format!("Run LED pattern {} x3", pattern_id), move || {
+                if let Ok(mut controller) = controller.lock() {
+                    controller.send_led(pattern_id, 3);
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        tray.add_label("Display")
+            .context("failed to add tray label")?;
+        for icon_id in ["cat1", "cat2", "cat3"] {
+            let controller = Arc::clone(&controller);
+            tray.add_menu_item(&format!("Show {}", icon_id), move || {
+                if let Ok(mut controller) = controller.lock() {
+                    controller.send_icon(icon_id);
+                }
+            })
+            .context("failed to add tray menu item")?;
+        }
+
+        tray.add_menu_item("Quit", || {
+            std::process::exit(0);
+        })
+        .context("failed to add tray menu item")?;
+
+        #[cfg(target_os = "macos")]
+        tray.inner_mut().display();
+
+        Ok(tray)
     }
 
     fn selected_port_name(&self) -> Option<&str> {
@@ -1495,7 +1451,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let wants_tray = args.iter().any(|a| a == "--tray");
     let force_gui = args.iter().any(|a| a == "--gui");
     let wants_headless = args.iter().any(|a| {
         matches!(
@@ -1503,10 +1458,6 @@ fn main() -> Result<()> {
             "--nogui" | "--background" | "--linux-monitor" | "--macos-monitor" | "--simulate"
         )
     });
-
-    if wants_tray && !force_gui {
-        return run_tray_mode(args);
-    }
 
     if wants_headless && !force_gui {
         args.retain(|a| a != "--nogui" && a != "--background" && a != "--gui");
@@ -1530,10 +1481,23 @@ fn main() -> Result<()> {
         native_options,
         Box::new(|cc| {
             LanderGui::install_fonts_and_text_style(&cc.egui_ctx);
-            let app = LanderGui {
+            let mut app = LanderGui {
                 app_icon_texture: LanderGui::load_app_icon_texture(&cc.egui_ctx),
                 ..Default::default()
             };
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                app._tray = match LanderGui::create_tray() {
+                    Ok(tray) => {
+                        eprintln!("tray: initialized");
+                        Some(tray)
+                    }
+                    Err(err) => {
+                        eprintln!("tray: failed to initialize tray icon: {}", err);
+                        None
+                    }
+                };
+            }
             Ok(Box::new(app))
         }),
     )

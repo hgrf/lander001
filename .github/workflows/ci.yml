@@ -19,6 +19,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up patched tray-item dependency
+        run: ./scripts/setup_tray_item.sh
+
       - name: Cache apt packages
         uses: actions/cache@v4
         with:
@@ -66,6 +69,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up patched tray-item dependency
+        run: ./scripts/setup_tray_item.sh
 
       - name: Cache apt packages
         uses: actions/cache@v4
@@ -173,6 +179,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up patched tray-item dependency
+        run: ./scripts/setup_tray_item.sh
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@master
