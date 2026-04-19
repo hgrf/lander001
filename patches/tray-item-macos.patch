@@ -1,0 +1,54 @@
+diff --git a/src/api/macos/mod.rs b/src/api/macos/mod.rs
+index 1e3f0b8..1b80024 100644
+--- a/src/api/macos/mod.rs
++++ b/src/api/macos/mod.rs
+@@ -51,6 +51,7 @@ fn get_icon_image(icon: IconSource) -> Option<id> {
+                     NSSize::new(18.0, 18.0)
+                 };
+                 let _: () = msg_send![image, setSize: new_size];
++                let _: () = msg_send![image, setTemplate: YES];
+                 Some(image)
+             }
+         }
+@@ -62,6 +63,7 @@ pub struct TrayItemMacOS {
+     menu: *mut objc::runtime::Object,
+     _pool: *mut objc::runtime::Object,
+     icon: Option<*mut objc::runtime::Object>,
++    status_item: Option<*mut objc::runtime::Object>,
+     main_thread: Option<JoinHandle<()>>,
+ }
+ 
+@@ -74,6 +76,7 @@ impl TrayItemMacOS {
+                 name: title.to_string(),
+                 _pool: pool,
+                 icon: get_icon_image(icon),
++                status_item: None,
+                 menu: NSMenu::new(nil).autorelease(),
+                 main_thread: None,
+             }
+@@ -161,17 +164,23 @@ impl TrayItemMacOS {
+                 item.setTitle_(title);
+             }
+             item.setMenu_(self.menu);
++            let _: () = msg_send![item, retain];
++            self.status_item = Some(item);
+ 
+             let current_app = NSRunningApplication::currentApplication(nil);
+             current_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps);
+-
+-            app.run();
+         }
+     }
+ }
+ 
+ impl Drop for TrayItemMacOS {
+     fn drop(&mut self) {
++        if let Some(item) = self.status_item.take() {
++            unsafe {
++                let _: () = msg_send![item, release];
++            }
++        }
++
+         match self.main_thread.take() {
+             Some(t) => t.join(),
+             None => Ok(()),

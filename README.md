@@ -89,8 +89,14 @@ The robot also varies LED pattern and antenna target angle based on app/category
 
 The desktop host tooling is now unified in `host-gui/`.
 
-- Default mode: GUI controller (`egui`/`eframe`)
-- Optional mode: headless bridge/monitor mode for notification forwarding, simulation, and tray operation
+- Default mode: GUI controller (`egui`/`eframe`) with a tray icon (macOS)
+- Optional mode: headless bridge/monitor mode for notification forwarding and simulation
+
+Tray dependency setup (required before GUI builds):
+
+```sh
+./scripts/setup_tray_item.sh
+```
 
 Run GUI mode on the host platform:
 
@@ -109,15 +115,6 @@ Optional background-style headless launch (no window):
 
 ```sh
 cargo run -- --background --macos-monitor /dev/cu.usbmodemXXXX
-```
-
-Tray mode (macOS and Ubuntu/Linux):
-
-```sh
-cargo run -- --tray --macos-monitor /dev/cu.usbmodemXXXX
-
-# Ubuntu/Linux example:
-cargo run -- --tray --linux-monitor /dev/ttyACM0
 ```
 
 Optionally pass a serial port explicitly:
