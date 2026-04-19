@@ -111,10 +111,13 @@ Optional background-style headless launch (no window):
 cargo run -- --background --macos-monitor /dev/cu.usbmodemXXXX
 ```
 
-Tray mode (macOS):
+Tray mode (macOS and Ubuntu/Linux):
 
 ```sh
 cargo run -- --tray --macos-monitor /dev/cu.usbmodemXXXX
+
+# Ubuntu/Linux example:
+cargo run -- --tray --linux-monitor /dev/ttyACM0
 ```
 
 Optionally pass a serial port explicitly:
