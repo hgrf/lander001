@@ -44,6 +44,90 @@ fn truncate_text(input: &str, max_chars: usize) -> String {
     }
 }
 
+fn wrap_text_with_ellipsis(input: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    if max_chars == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut truncated = false;
+
+    'word_loop: for word in input.split_whitespace() {
+        let word_len = word.chars().count();
+        let mut segments: Vec<String> = Vec::new();
+
+        if word_len <= max_chars {
+            segments.push(word.to_string());
+        } else {
+            let chars: Vec<char> = word.chars().collect();
+            let mut idx = 0;
+            while idx < chars.len() {
+                let end = (idx + max_chars).min(chars.len());
+                segments.push(chars[idx..end].iter().collect());
+                idx = end;
+            }
+        }
+
+        for segment in segments {
+            if current.is_empty() {
+                current = segment;
+                continue;
+            }
+
+            let current_len = current.chars().count();
+            let segment_len = segment.chars().count();
+            if current_len + 1 + segment_len <= max_chars {
+                current.push(' ');
+                current.push_str(&segment);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                if lines.len() >= max_lines {
+                    truncated = true;
+                    break 'word_loop;
+                }
+                current = segment;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        if lines.len() < max_lines {
+            lines.push(std::mem::take(&mut current));
+        } else {
+            truncated = true;
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::from("-"));
+    }
+
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        truncated = true;
+    }
+
+    if truncated {
+        let last_idx = lines.len().saturating_sub(1);
+        let suffix = "...";
+        let keep_chars = max_chars.saturating_sub(suffix.len());
+        let mut base: String = lines[last_idx].chars().take(keep_chars).collect();
+        while base.ends_with(' ') {
+            base.pop();
+        }
+
+        if base.is_empty() {
+            lines[last_idx] = suffix.chars().take(max_chars).collect();
+        } else {
+            base.push_str(suffix);
+            lines[last_idx] = base;
+        }
+    }
+
+    lines
+}
+
 fn draw_mail_icon<D>(display: &mut D, origin: Point) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -203,37 +287,63 @@ where
     } else {
         truncate_text(&evt.source_app, 24)
     };
-    let sender = if !evt.sender_name.is_empty() {
-        truncate_text(&evt.sender_name, 18)
-    } else if !evt.title.is_empty() {
-        truncate_text(&evt.title, 18)
+    let title_text = if !evt.title.is_empty() {
+        evt.title.replace('\n', " ")
+    } else if !evt.sender_name.is_empty() {
+        evt.sender_name.replace('\n', " ")
     } else {
         "Someone".to_string()
     };
-    let snippet = if !evt.body.is_empty() {
-        truncate_text(&evt.body.replace('\n', " "), 64)
+    let title_lines = wrap_text_with_ellipsis(&title_text, 12, 2);
+    let body_source = if !evt.body.is_empty() {
+        evt.body.replace('\n', " ")
     } else {
-        truncate_text(&evt.title, 40)
+        evt.title.replace('\n', " ")
     };
+    let title_start_y = 96;
+    let title_line_height = 20;
+    let handle_y = title_start_y + (title_lines.len() as i32) * title_line_height + 2;
+    let body_start_y = if !evt.sender_handle.is_empty() {
+        handle_y + 16
+    } else {
+        handle_y + 4
+    };
+    let body_bottom_y = 214;
+    let body_line_height = 11;
+    let body_max_lines = if body_start_y > body_bottom_y {
+        1
+    } else {
+        (((body_bottom_y - body_start_y) / body_line_height) + 1)
+            .max(1)
+            .min(7)
+    } as usize;
+    let snippet_lines = wrap_text_with_ellipsis(&body_source, 21, body_max_lines);
 
     Text::new(&header, Point::new(18, 36), title_style)
         .draw(display)
         .unwrap();
-    Text::new(&sender, Point::new(92, 96), sender_style)
-        .draw(display)
-        .unwrap();
-    Text::new(&snippet, Point::new(92, 124), body_style)
-        .draw(display)
-        .unwrap();
+    for (idx, line) in title_lines.iter().enumerate() {
+        let y = title_start_y + (idx as i32) * title_line_height;
+        Text::new(line, Point::new(92, y), sender_style)
+            .draw(display)
+            .unwrap();
+    }
 
     if !evt.sender_handle.is_empty() {
         Text::new(
-            &truncate_text(&evt.sender_handle, 26),
-            Point::new(92, 142),
+            &truncate_text(&evt.sender_handle, 21),
+            Point::new(92, handle_y),
             body_style,
         )
         .draw(display)
         .unwrap();
+    }
+
+    for (idx, line) in snippet_lines.iter().enumerate() {
+        let y = body_start_y + (idx as i32) * body_line_height;
+        Text::new(line, Point::new(92, y), body_style)
+            .draw(display)
+            .unwrap();
     }
 
     // Let FreeRTOS schedule IDLE task after a burst of SPI draw calls.
@@ -421,7 +531,7 @@ fn apply_wire_message<D, OE, SER, SRCLR, SRCLK, RCLK>(
             protocol::pb::wire_message::Payload::Notification(evt) => {
                 render_notification_card(display, &evt);
                 *notification_hold_until =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(6));
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
                 log::info!(
                     "protobuf: notification '{}' from '{}' (urgency {})",
                     evt.source_app,
@@ -739,6 +849,13 @@ fn main() {
                 &mut notification_hold_until,
             );
             led_animator.tick(&mut drive, std::time::Instant::now());
+
+            if let Some(until) = notification_hold_until {
+                if std::time::Instant::now() < until {
+                    break;
+                }
+            }
+
             Image::new(*img, Point::zero()).draw(&mut display).unwrap();
 
             sleep_with_command_pump(
@@ -753,6 +870,12 @@ fn main() {
                 &cat3,
                 &mut notification_hold_until,
             );
+
+            if let Some(until) = notification_hold_until {
+                if std::time::Instant::now() < until {
+                    break;
+                }
+            }
         }
     }
 }
