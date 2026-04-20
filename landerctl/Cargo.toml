@@ -1,5 +1,5 @@
 [package]
-name = "lander001-host-gui"
+name = "landerctl"
 version = "0.1.0"
 edition = "2021"
 
