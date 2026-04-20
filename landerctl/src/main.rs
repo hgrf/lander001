@@ -1310,6 +1310,7 @@ impl LanderGui {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn create_tray(
         controller: Arc<Mutex<SharedController>>,
+        ui_ctx: egui::Context,
     ) -> Result<(tray_item::TrayItem, u32, u32)> {
         use tray_item::{IconSource, TrayItem};
 
@@ -1399,6 +1400,20 @@ impl LanderGui {
 
         tray.add_label("Robot")
             .context("failed to add tray label")?;
+
+        {
+            let ui_ctx = ui_ctx.clone();
+            let _id = tray
+                .add_menu_item_with_id("Show window", move || {
+                    ui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ui_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ui_ctx.request_repaint();
+                })
+                .context("failed to add tray menu item")?;
+            #[cfg(target_os = "macos")]
+            tray.inner_mut().set_item_sf_symbol(_id, "macwindow");
+        }
 
         {
             let controller = Arc::clone(&controller);
@@ -1505,6 +1520,15 @@ impl LanderGui {
 
 impl eframe::App for LanderGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // Keep the app alive in the tray when the main window is closed.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.request_repaint();
+            return;
+        }
+
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if !self.monitor_started {
             let controller = Arc::clone(&self.controller);
@@ -1918,7 +1942,7 @@ fn main() -> Result<()> {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let controller = Arc::clone(&app.controller);
-                match LanderGui::create_tray(controller) {
+                match LanderGui::create_tray(controller, cc.egui_ctx.clone()) {
                     Ok((tray, status_id, connect_id)) => {
                         eprintln!("tray: initialized");
                         app._tray = Some(tray);
