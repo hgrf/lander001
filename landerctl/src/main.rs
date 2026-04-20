@@ -1,11 +1,11 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::collections::HashMap;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::{BufRead, BufReader};
 use std::io::{Read, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +73,10 @@ fn is_broken_pipe_error(err: &anyhow::Error) -> bool {
         if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
             io_err.kind() == std::io::ErrorKind::BrokenPipe
         } else {
-            cause.to_string().to_ascii_lowercase().contains("broken pipe")
+            cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("broken pipe")
         }
     })
 }
@@ -267,7 +270,11 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn default_notification_for_preset(preset: &str, from: &str, text: &str) -> (String, String, i32, String, String, String) {
+fn default_notification_for_preset(
+    preset: &str,
+    from: &str,
+    text: &str,
+) -> (String, String, i32, String, String, String) {
     match preset {
         "whatsapp" => (
             "WhatsApp".to_string(),
@@ -335,7 +342,9 @@ fn send_ping_message(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()>
 fn send_servo_message(conn: &mut Connection, next_msg_id: &mut u32, angle_deg: f32) -> Result<()> {
     let msg = pb::WireMessage {
         msg_id: take_next_msg_id(next_msg_id),
-        payload: Some(pb::wire_message::Payload::SetServo(pb::SetServo { angle_deg })),
+        payload: Some(pb::wire_message::Payload::SetServo(pb::SetServo {
+            angle_deg,
+        })),
     };
     conn.send_and_wait_ack(msg)
 }
@@ -433,7 +442,8 @@ impl Connection {
     }
 
     fn send_message(&mut self, msg: pb::WireMessage) -> Result<()> {
-        let frame = protocol::encode_frame(&msg).context("failed to encode framed protobuf message")?;
+        let frame =
+            protocol::encode_frame(&msg).context("failed to encode framed protobuf message")?;
         self.port
             .write_all(&frame)
             .context("failed to write framed protobuf message")?;
@@ -516,7 +526,8 @@ fn send_notification_animation(
     next_msg_id: &mut u32,
     category: i32,
 ) -> Result<()> {
-    let (led_pattern, led_repeats, excited_deg, rest_deg) = animation_profile_for_category(category);
+    let (led_pattern, led_repeats, excited_deg, rest_deg) =
+        animation_profile_for_category(category);
 
     send_servo_message(conn, next_msg_id, excited_deg)?;
     send_led_message(conn, next_msg_id, led_pattern, led_repeats)?;
@@ -671,12 +682,7 @@ where
 
             recent_signatures.insert(signature, now);
             let category = map_category(&source_app);
-            let sender_name = title
-                .split(':')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let sender_name = title.split(':').next().unwrap_or("").trim().to_string();
 
             on_event(ForwardedNotification {
                 source_app,
@@ -915,7 +921,8 @@ where
             };
 
             let now = std::time::Instant::now();
-            recent_signatures.retain(|_, seen_at| now.duration_since(*seen_at) < Duration::from_secs(4));
+            recent_signatures
+                .retain(|_, seen_at| now.duration_since(*seen_at) < Duration::from_secs(4));
             if recent_signatures
                 .get(&signature)
                 .is_some_and(|seen_at| now.duration_since(*seen_at) < Duration::from_secs(4))
@@ -1007,7 +1014,13 @@ fn run_headless(cli: Cli) -> Result<()> {
             cli.count, preset, cli.from
         );
         for index in 0..cli.count {
-            send_simulated_notification(&mut conn, &mut next_msg_id, &preset, &cli.from, &cli.text)?;
+            send_simulated_notification(
+                &mut conn,
+                &mut next_msg_id,
+                &preset,
+                &cli.from,
+                &cli.text,
+            )?;
             println!("Simulated notification {}/{} ACKed", index + 1, cli.count);
             if index + 1 < cli.count {
                 std::thread::sleep(Duration::from_millis(cli.interval_ms));
@@ -1165,11 +1178,7 @@ impl LanderGui {
         let img = image::load_from_memory(bytes).ok()?.to_rgba8();
         let size = [img.width() as usize, img.height() as usize];
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-        Some(ctx.load_texture(
-            "lander_icon",
-            color_image,
-            egui::TextureOptions::LINEAR,
-        ))
+        Some(ctx.load_texture("lander_icon", color_image, egui::TextureOptions::LINEAR))
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1337,11 +1346,11 @@ impl LanderGui {
                 })
                 .context("failed to add tray menu item")?;
             #[cfg(target_os = "macos")]
-            tray.inner_mut().set_item_sf_symbol(_id, "slider.horizontal.3");
+            tray.inner_mut()
+                .set_item_sf_symbol(_id, "slider.horizontal.3");
         }
 
-        tray.add_label("LED")
-            .context("failed to add tray label")?;
+        tray.add_label("LED").context("failed to add tray label")?;
         for pattern_id in 1..=4_u32 {
             let controller = Arc::clone(&controller);
             let _id = tray
@@ -1374,7 +1383,8 @@ impl LanderGui {
             .add_menu_item_with_id("Quit", || std::process::exit(0))
             .context("failed to add tray menu item")?;
         #[cfg(target_os = "macos")]
-        tray.inner_mut().set_item_sf_symbol(_quit_id, "xmark.circle");
+        tray.inner_mut()
+            .set_item_sf_symbol(_quit_id, "xmark.circle");
 
         #[cfg(target_os = "macos")]
         tray.inner_mut().display();
@@ -1410,24 +1420,22 @@ impl eframe::App for LanderGui {
         // ── Keyboard shortcut handling ──────────────────────────────────────
         // Read all key-presses in a single borrow, then act on them so that
         // we avoid holding the `input()` borrow while calling `&mut self`.
-        let (
-            key_c, key_d, key_p,
-            key_up, key_down, key_s,
-            key_1, key_2, key_3, key_4,
-            key_n,
-        ) = ctx.input(|i| (
-            i.key_pressed(egui::Key::C),
-            i.key_pressed(egui::Key::D),
-            i.key_pressed(egui::Key::P),
-            i.key_pressed(egui::Key::ArrowRight),
-            i.key_pressed(egui::Key::ArrowLeft),
-            i.key_pressed(egui::Key::S),
-            i.key_pressed(egui::Key::Num1),
-            i.key_pressed(egui::Key::Num2),
-            i.key_pressed(egui::Key::Num3),
-            i.key_pressed(egui::Key::Num4),
-            i.key_pressed(egui::Key::N),
-        ));
+        let (key_c, key_d, key_p, key_up, key_down, key_s, key_1, key_2, key_3, key_4, key_n) = ctx
+            .input(|i| {
+                (
+                    i.key_pressed(egui::Key::C),
+                    i.key_pressed(egui::Key::D),
+                    i.key_pressed(egui::Key::P),
+                    i.key_pressed(egui::Key::ArrowRight),
+                    i.key_pressed(egui::Key::ArrowLeft),
+                    i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::Num1),
+                    i.key_pressed(egui::Key::Num2),
+                    i.key_pressed(egui::Key::Num3),
+                    i.key_pressed(egui::Key::Num4),
+                    i.key_pressed(egui::Key::N),
+                )
+            });
 
         // Only fire shortcuts when no text-edit (or other keyboard-consuming
         // widget) currently holds focus.
@@ -1459,12 +1467,18 @@ impl eframe::App for LanderGui {
             for (pressed, pattern) in [(key_1, 1u32), (key_2, 2), (key_3, 3), (key_4, 4)] {
                 if pressed && connected {
                     self.led_pattern = pattern;
-                    self.controller.lock().unwrap().send_led(pattern, self.led_repeats);
+                    self.controller
+                        .lock()
+                        .unwrap()
+                        .send_led(pattern, self.led_repeats);
                 }
             }
             if key_n && connected {
                 let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
-                self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
+                self.controller
+                    .lock()
+                    .unwrap()
+                    .send_notification_and_animation(&p, &f, &t);
             }
         }
         // ───────────────────────────────────────────────────────────────────
@@ -1491,14 +1505,15 @@ impl eframe::App for LanderGui {
         ctx.set_visuals(visuals);
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let (Some(tray), Some(status_id), Some(connect_id)) = (
-            &mut self._tray,
-            self.tray_status_id,
-            self.tray_connect_id,
-        ) {
+        if let (Some(tray), Some(status_id), Some(connect_id)) =
+            (&mut self._tray, self.tray_status_id, self.tray_connect_id)
+        {
             let (is_connected, port_name) = {
                 let ctrl = self.controller.lock().unwrap();
-                (ctrl.is_connected(), ctrl.conn.as_ref().map(|c| c.port_name.clone()))
+                (
+                    ctrl.is_connected(),
+                    ctrl.conn.as_ref().map(|c| c.port_name.clone()),
+                )
             };
             if self.last_tray_connected != Some(is_connected) {
                 let status = if is_connected {
@@ -1507,7 +1522,11 @@ impl eframe::App for LanderGui {
                     "● Disconnected".to_string()
                 };
                 let _ = tray.set_item_label(status_id, &status);
-                let connect_label = if is_connected { "Disconnect" } else { "Connect" };
+                let connect_label = if is_connected {
+                    "Disconnect"
+                } else {
+                    "Connect"
+                };
                 let _ = tray.set_item_label(connect_id, connect_label);
                 #[cfg(target_os = "macos")]
                 {
@@ -1621,7 +1640,10 @@ impl eframe::App for LanderGui {
                     ui.add_enabled_ui(connected, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Servo");
-                            ui.add(egui::Slider::new(&mut self.servo_angle, 0.0..=270.0).suffix(" deg"));
+                            ui.add(
+                                egui::Slider::new(&mut self.servo_angle, 0.0..=270.0)
+                                    .suffix(" deg"),
+                            );
                             if ui.button("Send").clicked() {
                                 self.controller.lock().unwrap().send_servo(self.servo_angle);
                             }
@@ -1646,7 +1668,10 @@ impl eframe::App for LanderGui {
                             ui.label("Icon");
                             ui.text_edit_singleline(&mut self.icon_id);
                             if ui.button("Show").clicked() {
-                                self.controller.lock().unwrap().send_icon(self.icon_id.clone());
+                                self.controller
+                                    .lock()
+                                    .unwrap()
+                                    .send_icon(self.icon_id.clone());
                             }
                         });
                     });
@@ -1684,8 +1709,12 @@ impl eframe::App for LanderGui {
 
                         ui.horizontal(|ui| {
                             if ui.button("Send notification + fun animation").clicked() {
-                                let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
-                                self.controller.lock().unwrap().send_notification_and_animation(&p, &f, &t);
+                                let (p, f, t) =
+                                    (self.preset.clone(), self.from.clone(), self.text.clone());
+                                self.controller
+                                    .lock()
+                                    .unwrap()
+                                    .send_notification_and_animation(&p, &f, &t);
                             }
                             Self::shortcut_hint(ui, &["N"]);
                         });
@@ -1698,9 +1727,9 @@ impl eframe::App for LanderGui {
                 ui.group(|ui| {
                     ui.set_min_width(ui.available_width());
 
-                    let header_text = egui::RichText::new(
-                        format!("{} Keyboard shortcuts", regular::KEYBOARD)
-                    ).strong();
+                    let header_text =
+                        egui::RichText::new(format!("{} Keyboard shortcuts", regular::KEYBOARD))
+                            .strong();
                     ui.label(header_text);
                     ui.add_space(8.0);
                     egui::Grid::new("cheatsheet_grid")
@@ -1741,11 +1770,9 @@ impl eframe::App for LanderGui {
                         });
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new(
-                            "Shortcuts inactive while a text field has focus."
-                        )
-                        .italics()
-                        .weak(),
+                        egui::RichText::new("Shortcuts inactive while a text field has focus.")
+                            .italics()
+                            .weak(),
                     );
                 });
                 // ───────────────────────────────────────────────────────
@@ -1755,11 +1782,13 @@ impl eframe::App for LanderGui {
             ui.heading(egui::RichText::new("Activity log").strong());
             ui.separator();
 
-            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                for line in &logs {
-                    ui.label(line);
-                }
-            });
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for line in &logs {
+                        ui.label(line);
+                    }
+                });
         });
     }
 }
