@@ -81,13 +81,6 @@ fn is_broken_pipe_error(err: &anyhow::Error) -> bool {
     })
 }
 
-fn reconnect_connection(conn: &mut Connection) -> Result<()> {
-    let port_name = conn.port_name.clone();
-    *conn = Connection::new(port_name.clone())
-        .with_context(|| format!("failed to reconnect serial port {}", port_name))?;
-    Ok(())
-}
-
 impl Default for SharedController {
     fn default() -> Self {
         Self {
