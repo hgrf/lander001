@@ -4,12 +4,16 @@ use std::io::{Read, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "macos")]
+use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use eframe::egui;
 use egui_phosphor::regular;
+#[cfg(target_os = "macos")]
+use serde_json::Value;
 use serialport::SerialPort;
 
 #[path = "../../shared/protocol.rs"]
@@ -51,6 +55,35 @@ struct SharedController {
     logs: Vec<String>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Debug)]
+struct ForwardedNotification {
+    source_app: String,
+    source_bundle_id: String,
+    notification_id: String,
+    title: String,
+    body: String,
+    sender_name: String,
+    category: i32,
+}
+
+fn is_broken_pipe_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            io_err.kind() == std::io::ErrorKind::BrokenPipe
+        } else {
+            cause.to_string().to_ascii_lowercase().contains("broken pipe")
+        }
+    })
+}
+
+fn reconnect_connection(conn: &mut Connection) -> Result<()> {
+    let port_name = conn.port_name.clone();
+    *conn = Connection::new(port_name.clone())
+        .with_context(|| format!("failed to reconnect serial port {}", port_name))?;
+    Ok(())
+}
+
 impl Default for SharedController {
     fn default() -> Self {
         Self {
@@ -87,9 +120,19 @@ impl SharedController {
     {
         if let Some(mut conn) = self.conn.take() {
             let result = f(self, &mut conn);
-            self.conn = Some(conn);
-            if let Err(err) = result {
-                self.log(format!("Error: {}", err));
+            match result {
+                Ok(()) => {
+                    self.conn = Some(conn);
+                }
+                Err(err) => {
+                    let broken_pipe = is_broken_pipe_error(&err);
+                    self.log(format!("Error: {}", err));
+                    if broken_pipe {
+                        self.log(format!("Connection lost on {}", conn.port_name));
+                    } else {
+                        self.conn = Some(conn);
+                    }
+                }
             }
         } else {
             self.log("Not connected");
@@ -197,6 +240,20 @@ impl SharedController {
 
         self.with_conn(|this, conn| {
             send_notification_animation(conn, &mut this.next_msg_id, category)?;
+            Ok(())
+        });
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn forward_desktop_notification(&mut self, event: ForwardedNotification) {
+        if self.conn.is_none() {
+            return;
+        }
+
+        let source = event.source_app.clone();
+        self.with_conn(|this, conn| {
+            send_forwarded_notification(conn, &mut this.next_msg_id, &event)?;
+            this.log(format!("Forwarded desktop notification from '{}'", source));
             Ok(())
         });
     }
@@ -318,6 +375,40 @@ fn send_notification_message(
         payload: Some(pb::wire_message::Payload::Notification(event)),
     };
     conn.send_and_wait_ack(msg)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn send_forwarded_notification(
+    conn: &mut Connection,
+    next_msg_id: &mut u32,
+    event: &ForwardedNotification,
+) -> Result<()> {
+    send_notification_message(
+        conn,
+        next_msg_id,
+        pb::NotificationEvent {
+            id: if event.notification_id.is_empty() {
+                format!("host-{}", *next_msg_id)
+            } else {
+                format!("host-{}", event.notification_id)
+            },
+            source_app: event.source_app.clone(),
+            title: event.title.clone(),
+            body: event.body.clone(),
+            urgency: pb::Urgency::Normal as i32,
+            category: event.category,
+            source_bundle_id: event.source_bundle_id.clone(),
+            sender_name: event.sender_name.clone(),
+            sender_handle: String::new(),
+            app_icon_hint: app_icon_hint_for(
+                &event.source_bundle_id,
+                &event.source_app,
+                event.category,
+            ),
+        },
+    )?;
+
+    send_notification_animation(conn, next_msg_id, event.category)
 }
 
 struct Connection {
@@ -512,7 +603,10 @@ fn extract_quoted(line: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+fn run_monitor_loop<F>(mut on_event: F) -> Result<()>
+where
+    F: FnMut(ForwardedNotification),
+{
     let mut child = Command::new("dbus-monitor")
         .arg("--session")
         .arg("type='method_call',interface='org.freedesktop.Notifications',member='Notify'")
@@ -563,25 +657,15 @@ fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
                 .trim()
                 .to_string();
 
-            send_notification_message(
-                conn,
-                next_msg_id,
-                pb::NotificationEvent {
-                    id: format!("linux-{}", *next_msg_id),
-                    source_app: source_app.clone(),
-                    title: title.clone(),
-                    body: body.clone(),
-                    urgency: pb::Urgency::Normal as i32,
-                    category,
-                    source_bundle_id: String::new(),
-                    sender_name,
-                    sender_handle: String::new(),
-                    app_icon_hint: app_icon_hint_for("", &source_app, category),
-                },
-            )?;
-            println!("Forwarded notification from '{}'", source_app);
-
-            send_notification_animation(conn, next_msg_id, category)?;
+            on_event(ForwardedNotification {
+                source_app,
+                source_bundle_id: String::new(),
+                notification_id: String::new(),
+                title,
+                body,
+                sender_name,
+                category,
+            });
 
             collecting = false;
             strings.clear();
@@ -591,12 +675,41 @@ fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
     bail!("dbus-monitor exited unexpectedly")
 }
 
-#[cfg(target_os = "macos")]
-fn extract_json_string(line: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\" : \"", key);
-    let start = line.find(&pattern)? + pattern.len();
-    let end = line[start..].find('"')? + start;
-    Some(line[start..end].replace("\\/", "/"))
+#[cfg(target_os = "linux")]
+fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+    run_monitor_loop(|event| {
+        if let Err(err) = send_forwarded_notification(conn, next_msg_id, &event) {
+            eprintln!(
+                "failed to forward Linux notification from '{}': {}",
+                event.source_app, err
+            );
+
+            if is_broken_pipe_error(&err) {
+                eprintln!("serial connection lost; attempting reconnect...");
+                if let Err(reconnect_err) = reconnect_connection(conn) {
+                    eprintln!("reconnect failed: {}", reconnect_err);
+                    return;
+                }
+
+                if let Err(ping_err) = send_ping_message(conn, next_msg_id) {
+                    eprintln!("reconnect ping failed: {}", ping_err);
+                    return;
+                }
+
+                if let Err(retry_err) = send_forwarded_notification(conn, next_msg_id, &event) {
+                    eprintln!(
+                        "retry after reconnect failed for '{}': {}",
+                        event.source_app, retry_err
+                    );
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        println!("Forwarded notification from '{}'", event.source_app);
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -625,15 +738,129 @@ fn guess_sender_from_text(text: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
+fn extract_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let start = text.find(marker)? + marker.len();
+    Some(&text[start..])
+}
+
+#[cfg(target_os = "macos")]
+fn extract_between(text: &str, start_marker: &str, end_marker: &str) -> Option<String> {
+    let start = text.find(start_marker)? + start_marker.len();
+    let rest = &text[start..];
+    let end = rest.find(end_marker)?;
+    let value = rest[..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_until_any<'a>(text: &'a str, delims: &[char]) -> &'a str {
+    let end = text.find(|c| delims.contains(&c)).unwrap_or(text.len());
+    text[..end].trim()
+}
+
+#[cfg(target_os = "macos")]
+fn extract_bundle_id_from_message(message: &str) -> Option<String> {
+    if let Some(rest) = extract_after(message, "bundle=") {
+        let bundle = read_until_any(rest, &[',', ']']);
+        if !bundle.is_empty() {
+            return Some(bundle.to_string());
+        }
+    }
+
+    if let Some(rest) = extract_after(message, "bundleIdentifier: ") {
+        let bundle = read_until_any(rest, &[';', '>']);
+        if !bundle.is_empty() {
+            return Some(bundle.to_string());
+        }
+    }
+
+    if let Some(rest) = extract_after(message, "Adding notification to storage: ") {
+        let token = read_until_any(rest, &[' ', ']']);
+        if let Some((bundle, _)) = token.split_once(':') {
+            if !bundle.is_empty() {
+                return Some(bundle.to_string());
+            }
+        }
+    }
+
+    if let Some(app) = extract_between(message, "app:\"", "\"") {
+        return Some(app);
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn extract_notification_id_from_message(message: &str) -> Option<String> {
+    if let Some(rest) = extract_after(message, "id=") {
+        let id = read_until_any(rest, &[',', ']']);
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+
+    if let Some(rest) = extract_after(message, "Adding notification to storage: ") {
+        let token = read_until_any(rest, &[' ', ']']);
+        if let Some((_, id)) = token.split_once(':') {
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+
+    if let Some(id) = extract_between(message, "ident:\"", "\"") {
+        return Some(id);
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn should_forward_macos_event(subsystem: &str, event_message: &str) -> bool {
+    subsystem == "com.apple.unc"
+        && (event_message.starts_with("Presenting <NotificationRecord ")
+            || event_message.starts_with("Delivering <NotificationRecord "))
+}
+
+#[cfg(target_os = "macos")]
 fn extract_macos_notification_event(
-    line: &str,
-) -> Option<(String, String, String, String, String, i32)> {
-    let bundle_id = extract_json_string(line, "bundle-id")
-        .or_else(|| extract_json_string(line, "topic"))?;
+    entry: &Value,
+) -> Option<(String, String, String, String, String, String, i32)> {
+    let subsystem = entry
+        .get("subsystem")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let event_message = entry
+        .get("eventMessage")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    if !should_forward_macos_event(subsystem, event_message) {
+        return None;
+    }
+
+    let bundle_id = extract_bundle_id_from_message(event_message)
+        .or_else(|| {
+            entry
+                .get("topic")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            entry
+                .get("bundle-id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })?;
+
     let category = map_category(&bundle_id);
     let source_app = bundle_id_to_app_name(&bundle_id);
     let sender_name = if bundle_id.contains("WhatsApp") {
-        guess_sender_from_text(line)
+        guess_sender_from_text(event_message)
     } else {
         String::new()
     };
@@ -649,26 +876,29 @@ fn extract_macos_notification_event(
     Some((
         source_app,
         bundle_id,
+        extract_notification_id_from_message(event_message).unwrap_or_default(),
         title,
-        line.to_string(),
+        event_message.to_string(),
         sender_name,
         category,
     ))
 }
 
 #[cfg(target_os = "macos")]
-fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+fn run_monitor_loop<F>(mut on_event: F) -> Result<()>
+where
+    F: FnMut(ForwardedNotification),
+{
     let predicate =
         "process == \"usernoted\" OR subsystem CONTAINS[c] \"UserNotifications\" OR subsystem CONTAINS[c] \"unc\"";
-    let mut last_signature = String::new();
-    let mut last_sent_at = std::time::Instant::now() - Duration::from_secs(10);
+    let mut recent_signatures: HashMap<String, std::time::Instant> = HashMap::new();
 
     println!("Listening for macOS notification activity via unified log...");
     loop {
         let mut child = Command::new("log")
             .arg("stream")
             .arg("--style")
-            .arg("json")
+            .arg("ndjson")
             .arg("--predicate")
             .arg(predicate)
             .stdout(Stdio::piped())
@@ -684,44 +914,84 @@ fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
 
         for line in reader.lines() {
             let line = line.context("failed to read macOS log stream")?;
-            let Some((source_app, bundle_id, title, body, sender_name, category)) =
-                extract_macos_notification_event(&line)
+            let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+
+            let Some((source_app, bundle_id, notification_id, title, body, sender_name, category)) =
+                extract_macos_notification_event(&entry)
             else {
                 continue;
             };
 
-            let signature = format!("{}:{}:{}", bundle_id, title, sender_name);
-            if signature == last_signature && last_sent_at.elapsed() < Duration::from_secs(2) {
+            let signature = if notification_id.is_empty() {
+                format!("{}:{}:{}", bundle_id, title, sender_name)
+            } else {
+                format!("{}:{}", bundle_id, notification_id)
+            };
+
+            let now = std::time::Instant::now();
+            recent_signatures.retain(|_, seen_at| now.duration_since(*seen_at) < Duration::from_secs(4));
+            if recent_signatures
+                .get(&signature)
+                .is_some_and(|seen_at| now.duration_since(*seen_at) < Duration::from_secs(4))
+            {
                 continue;
             }
 
-            send_notification_message(
-                conn,
-                next_msg_id,
-                pb::NotificationEvent {
-                    id: format!("macos-{}", *next_msg_id),
-                    source_app: source_app.clone(),
-                    title,
-                    body,
-                    urgency: pb::Urgency::Normal as i32,
-                    category,
-                    source_bundle_id: bundle_id.clone(),
-                    sender_name: sender_name.clone(),
-                    sender_handle: String::new(),
-                    app_icon_hint: app_icon_hint_for(&bundle_id, &source_app, category),
-                },
-            )?;
-            println!("Forwarded macOS notification activity from '{}'", source_app);
+            on_event(ForwardedNotification {
+                source_app,
+                source_bundle_id: bundle_id,
+                notification_id,
+                title,
+                body,
+                sender_name,
+                category,
+            });
 
-            send_notification_animation(conn, next_msg_id, category)?;
-
-            last_signature = signature;
-            last_sent_at = std::time::Instant::now();
+            recent_signatures.insert(signature, now);
         }
 
         eprintln!("macOS log stream exited; restarting in 1s");
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+#[cfg(target_os = "macos")]
+fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+    run_monitor_loop(|event| {
+        if let Err(err) = send_forwarded_notification(conn, next_msg_id, &event) {
+            eprintln!(
+                "failed to forward macOS notification from '{}': {}",
+                event.source_app, err
+            );
+
+            if is_broken_pipe_error(&err) {
+                eprintln!("serial connection lost; attempting reconnect...");
+                if let Err(reconnect_err) = reconnect_connection(conn) {
+                    eprintln!("reconnect failed: {}", reconnect_err);
+                    return;
+                }
+
+                if let Err(ping_err) = send_ping_message(conn, next_msg_id) {
+                    eprintln!("reconnect ping failed: {}", ping_err);
+                    return;
+                }
+
+                if let Err(retry_err) = send_forwarded_notification(conn, next_msg_id, &event) {
+                    eprintln!(
+                        "retry after reconnect failed for '{}': {}",
+                        event.source_app, retry_err
+                    );
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        println!("Forwarded macOS notification activity from '{}'", event.source_app);
+    })
 }
 
 fn print_help() {
@@ -874,6 +1144,15 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
     bail!("notification forwarding is only supported on Linux and macOS");
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_monitor_with_controller(controller: Arc<Mutex<SharedController>>) -> Result<()> {
+    run_monitor_loop(|event| {
+        if let Ok(mut ctrl) = controller.lock() {
+            ctrl.forward_desktop_notification(event);
+        }
+    })
+}
+
 struct LanderGui {
     controller: Arc<Mutex<SharedController>>,
 
@@ -890,12 +1169,14 @@ struct LanderGui {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     _tray: Option<tray_item::TrayItem>,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        tray_status_id: Option<u32>,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        tray_connect_id: Option<u32>,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        last_tray_connected: Option<bool>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    tray_status_id: Option<u32>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    tray_connect_id: Option<u32>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    last_tray_connected: Option<bool>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    monitor_started: bool,
 }
 
 impl Default for LanderGui {
@@ -916,12 +1197,14 @@ impl Default for LanderGui {
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             _tray: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                tray_status_id: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                tray_connect_id: None,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                last_tray_connected: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            tray_status_id: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            tray_connect_id: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            last_tray_connected: None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            monitor_started: false,
         }
     }
 }
@@ -1202,6 +1485,17 @@ impl LanderGui {
 
 impl eframe::App for LanderGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if !self.monitor_started {
+            let controller = Arc::clone(&self.controller);
+            std::thread::spawn(move || {
+                if let Err(err) = run_monitor_with_controller(controller) {
+                    eprintln!("notification monitor stopped: {}", err);
+                }
+            });
+            self.monitor_started = true;
+        }
+
         // ── Keyboard shortcut handling ──────────────────────────────────────
         // Read all key-presses in a single borrow, then act on them so that
         // we avoid holding the `input()` borrow while calling `&mut self`.
