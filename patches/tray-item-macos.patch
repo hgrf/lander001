@@ -1,7 +1,92 @@
+diff --git a/src/api/linux_ksni/mod.rs b/src/api/linux_ksni/mod.rs
+index 848f371..f20d77a 100644
+--- a/src/api/linux_ksni/mod.rs
++++ b/src/api/linux_ksni/mod.rs
+@@ -4,6 +4,10 @@ use std::sync::{Arc, Mutex};
+ 
+ enum TrayItem {
+     Label(String),
++    LabelWithId {
++        id: u32,
++        label: String,
++    },
+     MenuItem {
+         id: u32,
+         label: String,
+@@ -66,6 +70,12 @@ impl ksni::Tray for Tray {
+                     ..Default::default()
+                 }
+                 .into(),
++                TrayItem::LabelWithId { label, .. } => StandardItem {
++                    label: label.clone(),
++                    enabled: false,
++                    ..Default::default()
++                }
++                .into(),
+                 TrayItem::MenuItem { label, action, .. } => {
+                     let action = action.clone();
+                     StandardItem {
+@@ -112,6 +122,23 @@ impl TrayItemLinux {
+         Ok(())
+     }
+ 
++    pub fn add_label_with_id(&mut self, label: &str) -> Result<u32, TIError> {
++        let id = Arc::new(Mutex::new(0u32));
++        let id_clone = Arc::clone(&id);
++        let label = label.to_string();
++        self.tray.update(move |tray| {
++            let current_id = tray.next_id;
++            tray.next_id += 1;
++            *id_clone.lock().unwrap() = current_id;
++            tray.actions.push(TrayItem::LabelWithId {
++                id: current_id,
++                label: label.clone(),
++            });
++        });
++        let result = *id.lock().unwrap();
++        Ok(result)
++    }
++
+     pub fn add_menu_item<F>(&mut self, label: &str, cb: F) -> Result<(), TIError>
+     where
+         F: Fn() -> () + Send + Sync + 'static,
+@@ -159,6 +186,23 @@ impl TrayItemLinux {
+         Ok(())
+     }
+ 
++    pub fn set_item_label(&mut self, id: u32, label: &str) -> Result<(), TIError> {
++        self.tray.update(move |tray| {
++            if let Some(l) = tray.actions.iter_mut().find_map(|item| match item {
++                TrayItem::LabelWithId {
++                    id: iid, label: l, ..
++                } if *iid == id => Some(l),
++                TrayItem::MenuItem {
++                    id: iid, label: l, ..
++                } if *iid == id => Some(l),
++                _ => None,
++            }) {
++                *l = label.to_string();
++            }
++        });
++        Ok(())
++    }
++
+     pub fn add_separator(&mut self) -> Result<(), TIError> {
+         self.tray.update(move |tray| {
+             tray.actions.push(TrayItem::Separator);
 diff --git a/src/api/macos/mod.rs b/src/api/macos/mod.rs
-index 1e3f0b8..1b80024 100644
+index f8805cb..60e06d4 100644
 --- a/src/api/macos/mod.rs
 +++ b/src/api/macos/mod.rs
+@@ -12,7 +12,7 @@ use {
+             NSApp, NSApplication, NSApplicationActivateIgnoringOtherApps, NSImage, NSMenu,
+             NSMenuItem, NSRunningApplication, NSStatusBar, NSStatusItem, NSWindow,
+         },
+-        base::{nil, YES},
++        base::{nil, NO, YES},
+         foundation::{NSAutoreleasePool, NSString},
+     },
+     objc::{msg_send, sel, sel_impl},
 @@ -51,6 +51,7 @@ fn get_icon_image(icon: IconSource) -> Option<id> {
                      NSSize::new(18.0, 18.0)
                  };
@@ -10,23 +95,101 @@ index 1e3f0b8..1b80024 100644
                  Some(image)
              }
          }
-@@ -62,6 +63,7 @@ pub struct TrayItemMacOS {
+@@ -62,7 +63,10 @@ pub struct TrayItemMacOS {
      menu: *mut objc::runtime::Object,
      _pool: *mut objc::runtime::Object,
      icon: Option<*mut objc::runtime::Object>,
 +    status_item: Option<*mut objc::runtime::Object>,
      main_thread: Option<JoinHandle<()>>,
++    tracked_items: Vec<(u32, *mut objc::runtime::Object)>,
++    next_item_id: u32,
  }
  
-@@ -74,6 +76,7 @@ impl TrayItemMacOS {
+ impl TrayItemMacOS {
+@@ -74,8 +78,11 @@ impl TrayItemMacOS {
                  name: title.to_string(),
                  _pool: pool,
                  icon: get_icon_image(icon),
 +                status_item: None,
                  menu: NSMenu::new(nil).autorelease(),
                  main_thread: None,
++                tracked_items: Vec::new(),
++                next_item_id: 0,
              }
-@@ -161,17 +164,23 @@ impl TrayItemMacOS {
+         };
+         Ok(t)
+@@ -131,6 +138,70 @@ impl TrayItemMacOS {
+         Ok(())
+     }
+ 
++    pub fn add_label_with_id(&mut self, label: &str) -> Result<u32, TIError> {
++        let id = self.next_item_id;
++        self.next_item_id += 1;
++        unsafe {
++            let no_key = NSString::alloc(nil).init_str("");
++            let itemtitle = NSString::alloc(nil).init_str(label);
++            let item = NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
++                itemtitle,
++                sel!(call),
++                no_key,
++            );
++            let _: () = msg_send![item, setEnabled: NO];
++            NSMenu::addItem_(self.menu, item);
++            self.tracked_items.push((id, item));
++        }
++        Ok(id)
++    }
++
++    pub fn add_menu_item_with_id<F>(&mut self, label: &str, cb: F) -> Result<u32, TIError>
++    where
++        F: Fn() + Send + 'static,
++    {
++        let id = self.next_item_id;
++        self.next_item_id += 1;
++        let cb_obj = Callback::from(Box::new(cb));
++        unsafe {
++            let no_key = NSString::alloc(nil).init_str("");
++            let itemtitle = NSString::alloc(nil).init_str(label);
++            let item = NSMenuItem::alloc(nil)
++                .initWithTitle_action_keyEquivalent_(itemtitle, sel!(call), no_key);
++            let _: () = msg_send![item, setTarget: cb_obj];
++            NSMenu::addItem_(self.menu, item);
++            self.tracked_items.push((id, item));
++        }
++        Ok(id)
++    }
++
++    pub fn set_item_label(&mut self, id: u32, label: &str) -> Result<(), TIError> {
++        if let Some(&(_, item)) = self.tracked_items.iter().find(|(iid, _)| *iid == id) {
++            unsafe {
++                let title = NSString::alloc(nil).init_str(label);
++                let _: () = msg_send![item, setTitle: title];
++            }
++        }
++        Ok(())
++    }
++
++    pub fn set_item_sf_symbol(&mut self, id: u32, symbol_name: &str) {
++        if let Some(&(_, item)) = self.tracked_items.iter().find(|(iid, _)| *iid == id) {
++            unsafe {
++                let sym_name = NSString::alloc(nil).init_str(symbol_name);
++                let image: id = msg_send![
++                    objc::class!(NSImage),
++                    imageWithSystemSymbolName: sym_name
++                    accessibilityDescription: nil
++                ];
++                if image != nil {
++                    let _: () = msg_send![image, setTemplate: YES];
++                    let _: () = msg_send![item, setImage: image];
++                }
++            }
++        }
++    }
++
+     // private
+ 
+     pub fn add_quit_item(&mut self, label: &str) {
+@@ -161,17 +232,23 @@ impl TrayItemMacOS {
                  item.setTitle_(title);
              }
              item.setMenu_(self.menu);
@@ -52,3 +215,29 @@ index 1e3f0b8..1b80024 100644
          match self.main_thread.take() {
              Some(t) => t.join(),
              None => Ok(()),
+diff --git a/src/lib.rs b/src/lib.rs
+index 9150f96..fba3828 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -47,6 +47,21 @@ impl TrayItem {
+         self.0.add_menu_item(label, cb)
+     }
+ 
++    pub fn add_label_with_id(&mut self, label: &str) -> Result<u32, TIError> {
++        self.0.add_label_with_id(label)
++    }
++
++    pub fn add_menu_item_with_id<F>(&mut self, label: &str, cb: F) -> Result<u32, TIError>
++    where
++        F: Fn() + Send + Sync + 'static,
++    {
++        self.0.add_menu_item_with_id(label, cb)
++    }
++
++    pub fn set_item_label(&mut self, id: u32, label: &str) -> Result<(), TIError> {
++        self.0.set_item_label(id, label)
++    }
++
+     pub fn inner_mut(&mut self) -> &mut api::TrayItemImpl {
+         &mut self.0
+     }
