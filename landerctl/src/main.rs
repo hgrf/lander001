@@ -726,10 +726,10 @@ fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
 
 fn print_help() {
     println!(
-        "lander001-host-gui — desktop host bridge for the lander001 desk robot
+        "landerctl — desktop host bridge for the lander001 desk robot
 
 USAGE:
-    lander001-host-gui [OPTIONS] [PORT]
+    landerctl [OPTIONS] [PORT]
 
 ARGUMENTS:
     PORT                     Serial port to use (auto-detected when omitted)
@@ -750,19 +750,19 @@ SIMULATION:
 
 EXAMPLES:
     # Launch GUI (default)
-    lander001-host-gui
+    landerctl
 
     # Headless mode forwarding notifications (auto-detected port)
-    lander001-host-gui --nogui
+    landerctl --nogui
 
     # Explicit port in headless mode
-    lander001-host-gui --nogui /dev/cu.usbmodemXXXX
+    landerctl --nogui /dev/cu.usbmodemXXXX
 
     # Simulate a WhatsApp notification
-    lander001-host-gui --nogui --simulate whatsapp --from \"Holger\" --text \"Coffee in 5?\"
+    landerctl --nogui --simulate whatsapp --from \"Holger\" --text \"Coffee in 5?\"
 
     # Burst simulation
-    lander001-host-gui --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800
+    landerctl --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800
 "
     );
 }
@@ -1330,7 +1330,7 @@ impl eframe::App for LanderGui {
                     ui.image((texture.id(), egui::vec2(128.0, 128.0)));
                     ui.add_space(6.0);
                 }
-                ui.heading("lander001 control");
+                ui.heading("landerctl");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ref port_name) = conn_port_name {
@@ -1593,7 +1593,7 @@ fn main() -> Result<()> {
     };
 
     eframe::run_native(
-        "lander001 control",
+        "landerctl",
         native_options,
         Box::new(|cc| {
             LanderGui::install_fonts_and_text_style(&cc.egui_ctx);

@@ -85,9 +85,9 @@ Incoming `NotificationEvent` messages now render a notification card on the LCD 
 
 The robot also varies LED pattern and antenna target angle based on app/category in addition to urgency.
 
-### 🖥️ Unified Host Tool (GUI + Headless)
+### 🖥️ landerctl (GUI + Headless)
 
-The desktop host tooling is now unified in `host-gui/`.
+The desktop host tooling is now unified in `landerctl/`.
 
 - Default mode: GUI controller (`egui`/`eframe`) with a tray icon (macOS)
 - Optional mode: headless bridge/monitor mode for notification forwarding and simulation
@@ -101,7 +101,7 @@ Tray dependency setup (required before GUI builds):
 Run GUI mode on the host platform:
 
 ```sh
-cd host-gui
+cd landerctl
 cargo run
 ```
 
