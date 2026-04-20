@@ -696,43 +696,6 @@ where
     bail!("dbus-monitor exited unexpectedly")
 }
 
-#[cfg(target_os = "linux")]
-fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
-    run_monitor_loop(|event| {
-        if let Err(err) = send_forwarded_notification(conn, next_msg_id, &event) {
-            eprintln!(
-                "failed to forward Linux notification from '{}': {}",
-                event.source_app, err
-            );
-
-            if is_broken_pipe_error(&err) {
-                eprintln!("serial connection lost; attempting reconnect...");
-                if let Err(reconnect_err) = reconnect_connection(conn) {
-                    eprintln!("reconnect failed: {}", reconnect_err);
-                    return;
-                }
-
-                if let Err(ping_err) = send_ping_message(conn, next_msg_id) {
-                    eprintln!("reconnect ping failed: {}", ping_err);
-                    return;
-                }
-
-                if let Err(retry_err) = send_forwarded_notification(conn, next_msg_id, &event) {
-                    eprintln!(
-                        "retry after reconnect failed for '{}': {}",
-                        event.source_app, retry_err
-                    );
-                    return;
-                }
-            } else {
-                return;
-            }
-        }
-
-        println!("Forwarded notification from '{}'", event.source_app);
-    })
-}
-
 #[cfg(target_os = "macos")]
 fn bundle_id_to_app_name(bundle_id: &str) -> String {
     let last = bundle_id.rsplit('.').next().unwrap_or(bundle_id);
@@ -978,43 +941,6 @@ where
     }
 }
 
-#[cfg(target_os = "macos")]
-fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
-    run_monitor_loop(|event| {
-        if let Err(err) = send_forwarded_notification(conn, next_msg_id, &event) {
-            eprintln!(
-                "failed to forward macOS notification from '{}': {}",
-                event.source_app, err
-            );
-
-            if is_broken_pipe_error(&err) {
-                eprintln!("serial connection lost; attempting reconnect...");
-                if let Err(reconnect_err) = reconnect_connection(conn) {
-                    eprintln!("reconnect failed: {}", reconnect_err);
-                    return;
-                }
-
-                if let Err(ping_err) = send_ping_message(conn, next_msg_id) {
-                    eprintln!("reconnect ping failed: {}", ping_err);
-                    return;
-                }
-
-                if let Err(retry_err) = send_forwarded_notification(conn, next_msg_id, &event) {
-                    eprintln!(
-                        "retry after reconnect failed for '{}': {}",
-                        event.source_app, retry_err
-                    );
-                    return;
-                }
-            } else {
-                return;
-            }
-        }
-
-        println!("Forwarded macOS notification activity from '{}'", event.source_app);
-    })
-}
-
 /// landerctl — desktop host bridge for the lander001 desk robot
 #[derive(Parser)]
 #[command(
@@ -1097,23 +1023,19 @@ fn run_headless(cli: Cli) -> Result<()> {
     send_ping_message(&mut conn, &mut next_msg_id)?;
     println!("Sent Ping and received ACK");
 
-    #[cfg(target_os = "linux")]
-    return run_monitor(&mut conn, &mut next_msg_id);
-
-    #[cfg(target_os = "macos")]
-    return run_monitor(&mut conn, &mut next_msg_id);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return run_monitor_loop(|event| {
+        if let Err(err) = send_forwarded_notification(&mut conn, &mut next_msg_id, &event) {
+            eprintln!(
+                "failed to forward Linux notification from '{}': {}",
+                event.source_app, err
+            );
+        }
+        println!("forwarded notification from '{}'", event.source_app);
+    });
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     bail!("notification forwarding is only supported on Linux and macOS");
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_monitor_with_controller(controller: Arc<Mutex<SharedController>>) -> Result<()> {
-    run_monitor_loop(|event| {
-        if let Ok(mut ctrl) = controller.lock() {
-            ctrl.forward_desktop_notification(event);
-        }
-    })
 }
 
 struct LanderGui {
@@ -1476,9 +1398,11 @@ impl eframe::App for LanderGui {
         if !self.monitor_started {
             let controller = Arc::clone(&self.controller);
             std::thread::spawn(move || {
-                if let Err(err) = run_monitor_with_controller(controller) {
-                    eprintln!("notification monitor stopped: {}", err);
-                }
+                run_monitor_loop(|event| {
+                    if let Ok(mut ctrl) = controller.lock() {
+                        ctrl.forward_desktop_notification(event);
+                    }
+                })
             });
             self.monitor_started = true;
         }
