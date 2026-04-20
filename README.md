@@ -36,6 +36,16 @@ ESP32-C3 Super Mini to ST7789 240x240 TFT Display:
 | DC       | GPIO1        | DC          | Data/Command |
 | RST      | GPIO0        | RST         | Reset |
 
+ESP32-C3 Super Mini to 74HC595 Shift Register:
+
+| Function | ESP32-C3 Pin | 74HC595 Pin | Description |
+|----------|--------------|-------------|-------------|
+| SER      | GPIO10       | DS (pin 14) | Serial Data Input |
+| SRCLK    | GPIO21       | SH_CP (pin 11) | Shift Register Clock |
+| RCLK     | GPIO20       | ST_CP (pin 12) | Storage Register Clock (Latch) |
+| OE       | GND          | /OE (pin 13) | Output Enable (active low, tie to GND) |
+| SRCLR    | VCC          | /MR (pin 10) | Master Reset (active low, tie to VCC) |
+
 ### 📦 Protobuf Transport (USB)
 
 Firmware now accepts framed protobuf messages over the ESP32-C3 USB Serial/JTAG interface.
