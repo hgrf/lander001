@@ -147,12 +147,6 @@ Burst simulation:
 cargo run -- --nogui --simulate whatsapp --from "Bob" --text "Ping!" --count 5 --interval-ms 800
 ```
 
-Live notification forwarding mode (forwards desktop notifications to the robot by default):
-
-```sh
-cargo run -- --nogui /dev/ttyACM0
-```
-
 On Linux, this uses `dbus-monitor` to observe `org.freedesktop.Notifications.Notify` calls and forwards them as protobuf `NotificationEvent` messages, waiting for an ACK after each send.
 
 Firmware builds are now explicit instead of being forced globally through Cargo config. Use:
