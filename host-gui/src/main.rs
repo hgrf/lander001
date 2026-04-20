@@ -512,7 +512,7 @@ fn extract_quoted(line: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
     let mut child = Command::new("dbus-monitor")
         .arg("--session")
         .arg("type='method_call',interface='org.freedesktop.Notifications',member='Notify'")
@@ -657,7 +657,7 @@ fn extract_macos_notification_event(
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
+fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
     let predicate =
         "process == \"usernoted\" OR subsystem CONTAINS[c] \"UserNotifications\" OR subsystem CONTAINS[c] \"unc\"";
     let mut last_signature = String::new();
@@ -740,11 +740,6 @@ OPTIONS:
 MODES (headless, mutually exclusive with GUI):
     --nogui                  Run in headless mode (no window)
     --background             Run headless in background style (no window)
-    --tray                   Run as a macOS tray application
-
-MONITORING:
-    --linux-monitor PORT     Forward Linux desktop notifications to the robot
-    --macos-monitor PORT     Forward macOS desktop notifications to the robot
 
 SIMULATION:
     --simulate PRESET        Send a simulated notification (whatsapp|mail|calendar|system)
@@ -757,7 +752,7 @@ EXAMPLES:
     # Launch GUI (default)
     lander001-host-gui
 
-    # Headless mode with auto-detected port
+    # Headless mode forwarding notifications (auto-detected port)
     lander001-host-gui --nogui
 
     # Explicit port in headless mode
@@ -768,19 +763,11 @@ EXAMPLES:
 
     # Burst simulation
     lander001-host-gui --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800
-
-    # macOS live notification forwarding
-    lander001-host-gui --nogui --macos-monitor /dev/cu.usbmodemXXXX
-
-    # macOS tray mode
-    lander001-host-gui --tray --macos-monitor /dev/cu.usbmodemXXXX
 "
     );
 }
 
 fn run_with_args(args: Vec<String>) -> Result<()> {
-    let mut linux_monitor = false;
-    let mut macos_monitor = false;
     let mut simulate: Option<String> = None;
     let mut sim_from = String::from("Alice");
     let mut sim_text = String::from("Hey! This is a test message");
@@ -791,14 +778,6 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--linux-monitor" => {
-                linux_monitor = true;
-                i += 1;
-            }
-            "--macos-monitor" => {
-                macos_monitor = true;
-                i += 1;
-            }
             "--simulate" => {
                 let value = args
                     .get(i + 1)
@@ -848,10 +827,6 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
         }
     }
 
-    if linux_monitor && macos_monitor {
-        bail!("choose only one of --linux-monitor or --macos-monitor");
-    }
-
     let port_name = if let Some(port) = port_override {
         port
     } else {
@@ -864,26 +839,6 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
 
     send_ping_message(&mut conn, &mut next_msg_id)?;
     println!("Sent Ping and received ACK");
-
-    #[cfg(target_os = "linux")]
-    if linux_monitor {
-        return run_linux_monitor(&mut conn, &mut next_msg_id);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    if linux_monitor {
-        bail!("--linux-monitor is only supported on Linux");
-    }
-
-    #[cfg(target_os = "macos")]
-    if macos_monitor {
-        return run_macos_monitor(&mut conn, &mut next_msg_id);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    if macos_monitor {
-        bail!("--macos-monitor is only supported on macOS");
-    }
 
     if let Some(preset) = simulate {
         if !matches!(preset.as_str(), "whatsapp" | "mail" | "calendar" | "system") {
@@ -909,28 +864,14 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    send_notification_message(
-        &mut conn,
-        &mut next_msg_id,
-        pb::NotificationEvent {
-            id: "test-1".to_string(),
-            source_app: "host-gui".to_string(),
-            title: "Rustyface test".to_string(),
-            body: "Host notification pipeline is alive".to_string(),
-            urgency: pb::Urgency::High as i32,
-            category: pb::Category::Mail as i32,
-            source_bundle_id: "local.test.rustyface".to_string(),
-            sender_name: "Copilot".to_string(),
-            sender_handle: String::new(),
-            app_icon_hint: "mail".to_string(),
-        },
-    )?;
-    println!("Sent NotificationEvent and received ACK");
+    #[cfg(target_os = "linux")]
+    return run_monitor(&mut conn, &mut next_msg_id);
 
-    send_notification_animation(&mut conn, &mut next_msg_id, pb::Category::Mail as i32)?;
-    println!("Sent notification animation sequence");
+    #[cfg(target_os = "macos")]
+    return run_monitor(&mut conn, &mut next_msg_id);
 
-    Ok(())
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    bail!("notification forwarding is only supported on Linux and macOS");
 }
 
 struct LanderGui {
@@ -1630,7 +1571,7 @@ fn main() -> Result<()> {
     let wants_headless = args.iter().any(|a| {
         matches!(
             a.as_str(),
-            "--nogui" | "--background" | "--linux-monitor" | "--macos-monitor" | "--simulate"
+            "--nogui" | "--background" | "--simulate"
         )
     });
 
