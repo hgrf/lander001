@@ -121,12 +121,6 @@ Run headless mode explicitly:
 cargo run -- --nogui
 ```
 
-Optional background-style headless launch (no window):
-
-```sh
-cargo run -- --background /dev/cu.usbmodemXXXX
-```
-
 Optionally pass a serial port explicitly:
 
 ```sh
