@@ -645,10 +645,13 @@ where
             }
         }
 
-        if strings.len() >= 3 {
+        // Notify(STRING app_name, UINT32 replaces_id, STRING app_icon, STRING summary, STRING body, ...)
+        // replaces_id is UINT32 (not a string), so strings order is:
+        //   [0] app_name, [1] app_icon, [2] summary (title), [3] body
+        if strings.len() >= 4 {
             let source_app = strings[0].clone();
-            let title = strings[1].clone();
-            let body = strings[2].clone();
+            let title = strings[2].clone();
+            let body = strings[3].clone();
             let category = map_category(&source_app);
             let sender_name = title
                 .split(':')
