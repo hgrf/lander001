@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use clap::Parser;
 use eframe::egui;
 use egui_phosphor::regular;
 #[cfg(target_os = "macos")]
@@ -1014,123 +1015,53 @@ fn run_monitor(conn: &mut Connection, next_msg_id: &mut u32) -> Result<()> {
     })
 }
 
-fn print_help() {
-    println!(
-        "landerctl — desktop host bridge for the lander001 desk robot
-
-USAGE:
-    landerctl [OPTIONS] [PORT]
-
-ARGUMENTS:
-    PORT                     Serial port to use (auto-detected when omitted)
-
-OPTIONS:
-    -h, --help               Print this help message and exit
-
-MODES (headless, mutually exclusive with GUI):
-    --nogui                  Run in headless mode (no window)
-    --background             Run headless in background style (no window)
-
-SIMULATION:
-    --simulate PRESET        Send a simulated notification (whatsapp|mail|calendar|system)
-    --from NAME              Sender name for simulation  [default: Alice]
-    --text TEXT              Message text for simulation [default: Hey! This is a test message]
-    --count N                Number of notifications to send [default: 1]
-    --interval-ms MS         Delay between burst notifications in ms [default: 1200]
-
-EXAMPLES:
-    # Launch GUI (default)
+/// landerctl — desktop host bridge for the lander001 desk robot
+#[derive(Parser)]
+#[command(
+    name = "landerctl",
+    after_help = "EXAMPLES:
     landerctl
-
-    # Headless mode forwarding notifications (auto-detected port)
     landerctl --nogui
-
-    # Explicit port in headless mode
     landerctl --nogui /dev/cu.usbmodemXXXX
-
-    # Simulate a WhatsApp notification
     landerctl --nogui --simulate whatsapp --from \"Holger\" --text \"Coffee in 5?\"
+    landerctl --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800"
+)]
+struct Cli {
+    /// Serial port to use (auto-detected when omitted)
+    port: Option<String>,
 
-    # Burst simulation
-    landerctl --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800
-"
-    );
+    /// Run in headless mode (no window)
+    #[arg(long)]
+    nogui: bool,
+
+    /// Force GUI even when --simulate is passed
+    #[arg(long, hide = true)]
+    gui: bool,
+
+    /// Send a simulated notification (whatsapp|mail|calendar|system)
+    #[arg(long, value_name = "PRESET")]
+    simulate: Option<String>,
+
+    /// Sender name for simulation
+    #[arg(long, default_value = "Alice")]
+    from: String,
+
+    /// Message text for simulation
+    #[arg(long, default_value = "Hey! This is a test message")]
+    text: String,
+
+    /// Number of notifications to send
+    #[arg(long, default_value_t = 1)]
+    count: u32,
+
+    /// Delay between burst notifications in ms
+    #[arg(long, default_value_t = 1200, value_name = "MS")]
+    interval_ms: u64,
 }
 
-fn run_with_args(args: Vec<String>) -> Result<()> {
-    let mut simulate: Option<String> = None;
-    let mut sim_from = String::from("Alice");
-    let mut sim_text = String::from("Hey! This is a test message");
-    let mut sim_count: u32 = 1;
-    let mut sim_interval_ms: u64 = 1200;
-    let mut port_override: Option<String> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--simulate" => {
-                let value = args
-                    .get(i + 1)
-                    .context("--simulate needs a preset: whatsapp|mail|calendar|system")?;
-                simulate = Some(value.to_ascii_lowercase());
-                i += 2;
-            }
-            "--from" => {
-                let value = args.get(i + 1).context("--from needs a value")?;
-                sim_from = value.clone();
-                i += 2;
-            }
-            "--text" => {
-                let value = args.get(i + 1).context("--text needs a value")?;
-                sim_text = value.clone();
-                i += 2;
-            }
-            "--count" => {
-                let value = args.get(i + 1).context("--count needs a number")?;
-                sim_count = value
-                    .parse::<u32>()
-                    .with_context(|| format!("invalid --count value '{}'", value))?;
-                i += 2;
-            }
-            "--interval-ms" => {
-                let value = args.get(i + 1).context("--interval-ms needs a number")?;
-                sim_interval_ms = value
-                    .parse::<u64>()
-                    .with_context(|| format!("invalid --interval-ms value '{}'", value))?;
-                i += 2;
-            }
-            "-h" | "--help" => {
-                print_help();
-                return Ok(());
-            }
-            other if other.starts_with('-') => {
-                bail!("unknown argument '{}'; expected monitor/sim flags", other);
-            }
-            value => {
-                if port_override.is_none() {
-                    port_override = Some(value.to_string());
-                    i += 1;
-                } else {
-                    bail!("unexpected extra positional argument '{}'", value);
-                }
-            }
-        }
-    }
-
-    let port_name = if let Some(port) = port_override {
-        port
-    } else {
-        find_default_port()?
-    };
-    println!("Opening serial port: {}", port_name);
-
-    let mut conn = Connection::new(port_name)?;
-    let mut next_msg_id = 1_u32;
-
-    send_ping_message(&mut conn, &mut next_msg_id)?;
-    println!("Sent Ping and received ACK");
-
-    if let Some(preset) = simulate {
+fn run_headless(cli: Cli) -> Result<()> {
+    if let Some(ref preset) = cli.simulate {
+        let preset = preset.to_ascii_lowercase();
         if !matches!(preset.as_str(), "whatsapp" | "mail" | "calendar" | "system") {
             bail!(
                 "invalid --simulate preset '{}'; use whatsapp|mail|calendar|system",
@@ -1138,21 +1069,33 @@ fn run_with_args(args: Vec<String>) -> Result<()> {
             );
         }
 
+        let port_name = cli.port.map(Ok).unwrap_or_else(find_default_port)?;
+        println!("Opening serial port: {}", port_name);
+        let mut conn = Connection::new(port_name)?;
+        let mut next_msg_id = 1_u32;
+        send_ping_message(&mut conn, &mut next_msg_id)?;
+        println!("Sent Ping and received ACK");
+
         println!(
             "Sending {} simulated '{}' notification(s) from '{}'...",
-            sim_count, preset, sim_from
+            cli.count, preset, cli.from
         );
-
-        for index in 0..sim_count {
-            send_simulated_notification(&mut conn, &mut next_msg_id, &preset, &sim_from, &sim_text)?;
-            println!("Simulated notification {}/{} ACKed", index + 1, sim_count);
-            if index + 1 < sim_count {
-                std::thread::sleep(Duration::from_millis(sim_interval_ms));
+        for index in 0..cli.count {
+            send_simulated_notification(&mut conn, &mut next_msg_id, &preset, &cli.from, &cli.text)?;
+            println!("Simulated notification {}/{} ACKed", index + 1, cli.count);
+            if index + 1 < cli.count {
+                std::thread::sleep(Duration::from_millis(cli.interval_ms));
             }
         }
-
         return Ok(());
     }
+
+    let port_name = cli.port.map(Ok).unwrap_or_else(find_default_port)?;
+    println!("Opening serial port: {}", port_name);
+    let mut conn = Connection::new(port_name)?;
+    let mut next_msg_id = 1_u32;
+    send_ping_message(&mut conn, &mut next_msg_id)?;
+    println!("Sent Ping and received ACK");
 
     #[cfg(target_os = "linux")]
     return run_monitor(&mut conn, &mut next_msg_id);
@@ -1898,24 +1841,11 @@ impl eframe::App for LanderGui {
 }
 
 fn main() -> Result<()> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = Cli::parse();
 
-    if args.iter().any(|a| a == "-h" || a == "--help") {
-        print_help();
-        return Ok(());
-    }
-
-    let force_gui = args.iter().any(|a| a == "--gui");
-    let wants_headless = args.iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--nogui" | "--background" | "--simulate"
-        )
-    });
-
-    if wants_headless && !force_gui {
-        args.retain(|a| a != "--nogui" && a != "--background" && a != "--gui");
-        return run_with_args(args);
+    let wants_headless = cli.nogui || cli.simulate.is_some();
+    if wants_headless && !cli.gui {
+        return run_headless(cli);
     }
 
     let app_icon = LanderGui::load_app_icon_data().ok();
