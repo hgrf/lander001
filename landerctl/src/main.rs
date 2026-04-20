@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
@@ -623,12 +623,14 @@ where
 
     let mut collecting = false;
     let mut strings: Vec<String> = Vec::new();
+    let dedup_ttl = Duration::from_secs(4);
+    let mut recent_signatures: HashMap<String, Instant> = HashMap::new();
 
     println!("Listening for Linux desktop notifications via dbus-monitor...");
     for line in reader.lines() {
         let line = line.context("failed to read dbus-monitor output")?;
 
-        if line.contains("member=\"Notify\"") {
+        if line.contains("member=Notify") || line.contains("member=\"Notify\"") {
             collecting = true;
             strings.clear();
             continue;
@@ -652,6 +654,21 @@ where
             let source_app = strings[0].clone();
             let title = strings[2].clone();
             let body = strings[3].clone();
+            let signature = format!("{}:{}:{}", source_app, title, body);
+            let now = Instant::now();
+            recent_signatures.retain(|_, seen_at| {
+                now.checked_duration_since(*seen_at)
+                    .map(|age| age < dedup_ttl)
+                    .unwrap_or(false)
+            });
+
+            if recent_signatures.contains_key(&signature) {
+                collecting = false;
+                strings.clear();
+                continue;
+            }
+
+            recent_signatures.insert(signature, now);
             let category = map_category(&source_app);
             let sender_name = title
                 .split(':')
