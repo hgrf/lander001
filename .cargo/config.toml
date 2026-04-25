@@ -1,4 +1,4 @@
-[target.riscv32imc-esp-espidf]
+[target.'cfg(target_os = "espidf")']
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = [ "--cfg",  "espidf_time64"]
@@ -12,7 +12,10 @@ fw-run = "run --target riscv32imc-esp-espidf"
 build-std = ["std", "panic_abort"]
 
 [env]
-MCU="esp32c3"
-# Note: this variable is not used by the pio builder (`cargo build --features pio`)
-ESP_IDF_VERSION = "v5.3.3"
+MCU = "esp32c3"
+ESP_IDF_VERSION = "v5.4.3"
+ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
 
+# Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
+# Required for now due to embuild limitations.
+#CARGO_WORKSPACE_DIR = { value = "", relative = true }
