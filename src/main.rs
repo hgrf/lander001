@@ -7,13 +7,13 @@ use embedded_graphics::primitives::{
     Circle, Line, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, Triangle,
 };
 use embedded_graphics::text::Text;
-use esp_idf_hal::delay::Delay;
-use esp_idf_hal::gpio::PinDriver;
-use esp_idf_hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver};
-use esp_idf_hal::prelude::*;
-use esp_idf_hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver};
-use esp_idf_hal::units::FromValueType;
-use esp_idf_hal::usb_serial::{UsbSerialConfig, UsbSerialDriver};
+use esp_idf_svc::hal::delay::Delay;
+use esp_idf_svc::hal::gpio::PinDriver;
+use esp_idf_svc::hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver};
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver};
+use esp_idf_svc::hal::units::FromValueType;
+use esp_idf_svc::hal::usb_serial::{UsbSerialConfig, UsbSerialDriver};
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -360,7 +360,7 @@ fn write_wire_message(usb_serial: &mut UsbSerialDriver<'_>, msg: &protocol::pb::
     };
     let mut written = 0;
     while written < frame.len() {
-        match usb_serial.write(&frame[written..], esp_idf_hal::delay::NON_BLOCK) {
+        match usb_serial.write(&frame[written..], esp_idf_svc::hal::delay::NON_BLOCK) {
             Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
             Ok(n) => written += n,
             Err(err) => {
@@ -653,7 +653,7 @@ fn main() {
 
     let servo_timer_cfg = TimerConfig::new()
         .frequency(50.Hz().into())
-        .resolution(esp_idf_hal::ledc::config::Resolution::Bits14);
+        .resolution(esp_idf_svc::hal::ledc::config::Resolution::Bits14);
     let servo_timer = LedcTimerDriver::new(peripherals.ledc.timer0, &servo_timer_cfg).unwrap();
     let mut servo = LedcDriver::new(
         peripherals.ledc.channel0,
@@ -699,7 +699,7 @@ fn main() {
                 continue;
             }
 
-            match usb_serial.read(&mut read_buf, esp_idf_hal::delay::NON_BLOCK) {
+            match usb_serial.read(&mut read_buf, esp_idf_svc::hal::delay::NON_BLOCK) {
                 Ok(0) => std::thread::sleep(std::time::Duration::from_millis(10)),
                 Ok(n) => {
                     decoder.push_bytes(&read_buf[..n]);
@@ -753,13 +753,13 @@ fn main() {
         peripherals.spi2,
         sclk,
         mosi,
-        None::<esp_idf_hal::gpio::AnyIOPin>, // No MISO
-        &esp_idf_hal::spi::SpiDriverConfig::default(),
+        None::<esp_idf_svc::hal::gpio::AnyIOPin>, // No MISO
+        &esp_idf_svc::hal::spi::SpiDriverConfig::default(),
     )
     .unwrap();
 
     let spi_device =
-        SpiDeviceDriver::new(spi_driver, None::<esp_idf_hal::gpio::AnyIOPin>, &spi_config).unwrap();
+        SpiDeviceDriver::new(spi_driver, None::<esp_idf_svc::hal::gpio::AnyIOPin>, &spi_config).unwrap();
 
     let dc = PinDriver::output(dc_pin).unwrap();
     let mut rst = PinDriver::output(rst_pin).unwrap();
