@@ -36,7 +36,7 @@ use mipidsi::options::Orientation;
 use mipidsi::options::Rotation;
 use std::sync::{Arc, Mutex};
 
-#[path = "../shared/protocol.rs"]
+#[path = "../../shared/protocol.rs"]
 mod protocol;
 
 pub const BLE_SERVICE_UUID_U128: u128 = 0x0ad91b20173440479e173bed82d75f9d;

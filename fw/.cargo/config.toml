@@ -1,12 +1,10 @@
+[build]
+target = "riscv32imc-esp-espidf"
+
 [target.'cfg(target_os = "espidf")']
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = [ "--cfg",  "espidf_time64"]
-
-[alias]
-fw-build = "build --target riscv32imc-esp-espidf"
-fw-check = "check --target riscv32imc-esp-espidf"
-fw-run = "run --target riscv32imc-esp-espidf"
 
 [unstable]
 build-std = ["std", "panic_abort"]
@@ -15,6 +13,7 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32c3"
 ESP_IDF_VERSION = "v5.4.3"
 ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+ESP_IDF_SYS_ROOT_CRATE = "lander001"
 
 # Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
 # Required for now due to embuild limitations.

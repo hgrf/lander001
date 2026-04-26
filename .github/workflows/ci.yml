@@ -317,11 +317,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.espressif
-          key: espressif-${{ hashFiles('.cargo/config.toml') }}
+          key: espressif-${{ hashFiles('fw/.cargo/config.toml', 'fw/Cargo.toml') }}
           restore-keys: espressif-
 
       - name: Build firmware
-        run: cargo fw-build --release
+        run: |
+          cd fw
+          cargo build --release
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4

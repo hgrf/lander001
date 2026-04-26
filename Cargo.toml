@@ -1,42 +1,20 @@
-[package]
-name = "lander001"
-version = "0.1.0"
-authors = ["Holger Graef <holger.graef@gmail.com>"]
-edition = "2021"
+[workspace]
+members = ["fw", "landerctl"]
+default-members = ["landerctl"]
 resolver = "2"
-rust-version = "1.82"
-
-[[bin]]
-name = "lander001"
-harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
-
-[profile.release]
-opt-level = "s"
 
 [profile.dev]
-debug = true    # Symbols are nice, and they don't increase the size on Flash
+debug = true
+
+[profile.dev.package.lander001]
 opt-level = "z"
 
-[dependencies]
-anyhow = "1.0"
-log = "0.4"
-esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
-# NOTE: only for GPIO20/21 workaround
-esp-idf-sys = "0.37.2"
-# Remove `generic-queue-8` if you plan to use `embassy-time` WITH `embassy-executor`
-embassy-time = { version = "0.5", features = ["generic-queue-8"] }
-mipidsi = "0.9.0"
-embedded-graphics = "0.8.2"
-embedded-hal-bus = "0.3.0"
-embedded-hal = "1.0.0"
-drive_74hc595 = "0.2.0"
-dummy-pin = "1.0.0"
-enumset = "1.1"
-prost = { version = "0.13", default-features = false, features = ["derive"] }
-crc32fast = "1.4"
+[profile.release.package.lander001]
+opt-level = "s"
 
-[build-dependencies]
-embuild = "0.33"
-image = { version = "0.25", default-features = false, features = ["png"] }
-prost-build = "0.13"
-protoc-bin-vendored = "3"
+[patch.crates-io]
+# Fixes firmware panic on disconnect with HCI reason codes not in GattConnReason enum
+# (e.g. reason 5 = Auth Failure from Linux). Upstream issue: .try_into().unwrap() in
+# esp-idf-svc 0.52.1 src/bt/ble/gatt/server.rs:367 and client.rs:841.
+esp-idf-svc = { path = "vendor/esp-idf-svc" }
+tray-item = { path = "vendor/tray-item" }
