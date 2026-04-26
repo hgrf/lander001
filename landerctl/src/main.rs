@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -34,6 +35,10 @@ fn list_ports() -> Vec<String> {
 pub const BLE_SERVICE_UUID: &str = "0ad91b20-1734-4047-9e17-3bed82d75f9d";
 pub const BLE_TX_CHAR_UUID: &str = "503de214-8682-46c4-828f-d59144da41be";
 pub const BLE_RX_CHAR_UUID: &str = "b6fccb50-87be-44f3-ae22-f85485ea42c4";
+const BLE_SCAN_STATUS: &str = "Scanning for BLE devices...";
+const BLE_WRITE_TIMEOUT: Duration = Duration::from_millis(700);
+const BLE_ACK_TIMEOUT: Duration = Duration::from_millis(900);
+const BLE_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
 
 fn ble_service_uuid() -> Result<Uuid> {
     Uuid::parse_str(BLE_SERVICE_UUID)
@@ -115,8 +120,150 @@ struct SharedController {
     ports: Vec<String>,
     selected_port_idx: usize,
     conn: Option<Connection>,
+    pending_connect: Option<PendingConnection>,
+    pending_scan: Option<PendingScan>,
+    pending_disconnect: Option<PendingDisconnect>,
+    pending_command: Option<PendingCommand>,
     next_msg_id: u32,
     logs: Vec<String>,
+}
+
+struct PendingConnection {
+    port_name: String,
+    started_at: Instant,
+    cancel_flag: Arc<AtomicBool>,
+    events_rx: std::sync::mpsc::Receiver<ConnectWorkerEvent>,
+    status: String,
+}
+
+enum ConnectWorkerEvent {
+    Progress(String),
+    Finished(Box<Result<Connection>>),
+}
+
+struct PendingScan {
+    started_at: Instant,
+    result_rx: std::sync::mpsc::Receiver<Result<Vec<String>>>,
+}
+
+struct PendingDisconnect {
+    port_name: String,
+    started_at: Instant,
+    result_rx: std::sync::mpsc::Receiver<Result<()>>,
+}
+
+struct PendingCommand {
+    label: String,
+    port_name: String,
+    started_at: Instant,
+    result_rx: std::sync::mpsc::Receiver<CommandWorkerResult>,
+}
+
+struct CommandWorkerResult {
+    conn: Connection,
+    next_msg_id: u32,
+    outcome: Result<Vec<String>>,
+}
+
+enum CommandRequest {
+    Ping,
+    Servo {
+        angle_deg: f32,
+    },
+    Led {
+        pattern_id: u32,
+        repeats: u32,
+    },
+    Icon {
+        icon_id: String,
+    },
+    NotificationAndAnimation {
+        preset: String,
+        from: String,
+        text: String,
+    },
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    ForwardedNotification(ForwardedNotification),
+}
+
+impl CommandRequest {
+    fn label(&self) -> String {
+        match self {
+            Self::Ping => "Sending ping...".to_string(),
+            Self::Servo { angle_deg } => format!("Setting servo to {:.1} deg...", angle_deg),
+            Self::Led {
+                pattern_id,
+                repeats,
+            } => format!("Running LED pattern {} x{}...", pattern_id, repeats),
+            Self::Icon { icon_id } => format!("Showing icon '{}'...", icon_id),
+            Self::NotificationAndAnimation { preset, .. } => {
+                format!("Sending '{}' notification...", preset)
+            }
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::ForwardedNotification(event) => {
+                format!("Forwarding '{}' notification...", event.source_app)
+            }
+        }
+    }
+
+    fn execute(self, conn: &mut Connection, next_msg_id: &mut u32) -> Result<Vec<String>> {
+        match self {
+            Self::Ping => {
+                send_ping_message(conn, next_msg_id)?;
+                Ok(vec!["Ping ACKed".to_string()])
+            }
+            Self::Servo { angle_deg } => {
+                send_servo_message(conn, next_msg_id, angle_deg)?;
+                Ok(vec![format!("SetServo {:.1} deg ACKed", angle_deg)])
+            }
+            Self::Led {
+                pattern_id,
+                repeats,
+            } => {
+                send_led_message(conn, next_msg_id, pattern_id, repeats)?;
+                Ok(vec![format!(
+                    "LedAnimation p={} r={} ACKed",
+                    pattern_id, repeats
+                )])
+            }
+            Self::Icon { icon_id } => {
+                send_icon_message(conn, next_msg_id, &icon_id)?;
+                Ok(vec![format!("ShowIcon '{}' ACKed", icon_id)])
+            }
+            Self::NotificationAndAnimation { preset, from, text } => {
+                let (source_app, source_bundle_id, category, title, sender_name, app_icon_hint) =
+                    default_notification_for_preset(&preset, &from, &text);
+                let notif_id = *next_msg_id;
+                send_notification_message(
+                    conn,
+                    next_msg_id,
+                    pb::NotificationEvent {
+                        id: format!("gui-{}-{}", preset, notif_id),
+                        source_app: source_app.clone(),
+                        title: title.clone(),
+                        body: text,
+                        urgency: pb::Urgency::Normal as i32,
+                        category,
+                        source_bundle_id,
+                        sender_name,
+                        sender_handle: String::new(),
+                        app_icon_hint,
+                    },
+                )?;
+                send_notification_animation(conn, next_msg_id, category)?;
+                Ok(vec![format!("Notification '{}' ACKed", source_app)])
+            }
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::ForwardedNotification(event) => {
+                let source = event.source_app.clone();
+                send_forwarded_notification(conn, next_msg_id, &event)?;
+                Ok(vec![format!(
+                    "Forwarded desktop notification from '{}'",
+                    source
+                )])
+            }
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -144,12 +291,26 @@ fn is_broken_pipe_error(err: &anyhow::Error) -> bool {
     })
 }
 
+fn disconnect_connection(conn: Connection) -> Result<()> {
+    let port_name = conn.port_name.clone();
+    conn.runtime.block_on(async {
+        tokio::time::timeout(BLE_DISCONNECT_TIMEOUT, conn.peripheral.disconnect())
+            .await
+            .with_context(|| format!("timed out disconnecting from {}", port_name))?
+            .context("failed to disconnect BLE peripheral")
+    })
+}
+
 impl Default for SharedController {
     fn default() -> Self {
         Self {
             ports: list_ports(),
             selected_port_idx: 0,
             conn: None,
+            pending_connect: None,
+            pending_scan: None,
+            pending_disconnect: None,
+            pending_command: None,
             next_msg_id: 1,
             logs: Vec::new(),
         }
@@ -171,18 +332,192 @@ impl SharedController {
     }
 
     fn is_connected(&self) -> bool {
-        self.conn.is_some()
+        self.conn.is_some() || self.pending_command.is_some()
     }
 
-    fn with_conn<F>(&mut self, mut f: F)
-    where
-        F: FnMut(&mut Self, &mut Connection) -> Result<()>,
-    {
-        if let Some(mut conn) = self.conn.take() {
-            let result = f(self, &mut conn);
+    fn is_connecting(&self) -> bool {
+        self.pending_connect.is_some()
+    }
+
+    fn is_scanning(&self) -> bool {
+        self.pending_scan.is_some()
+    }
+
+    fn is_disconnecting(&self) -> bool {
+        self.pending_disconnect.is_some()
+    }
+
+    fn is_command_pending(&self) -> bool {
+        self.pending_command.is_some()
+    }
+
+    fn pending_command_status(&self) -> Option<&str> {
+        self.pending_command
+            .as_ref()
+            .map(|pending| pending.label.as_str())
+    }
+
+    fn scan_status(&self) -> Option<&str> {
+        self.pending_scan.as_ref().map(|_| BLE_SCAN_STATUS)
+    }
+
+    fn disconnect_status(&self) -> Option<String> {
+        self.pending_disconnect.as_ref().map(|pending| {
+            format!(
+                "Disconnecting from {}...",
+                ble_device_display_name(&pending.port_name)
+            )
+        })
+    }
+
+    fn connected_port_name(&self) -> Option<&str> {
+        self.conn
+            .as_ref()
+            .map(|conn| conn.port_name.as_str())
+            .or_else(|| {
+                self.pending_command
+                    .as_ref()
+                    .map(|pending| pending.port_name.as_str())
+            })
+    }
+
+    fn connect_status(&self) -> Option<&str> {
+        self.pending_connect
+            .as_ref()
+            .map(|pending| pending.status.as_str())
+    }
+
+    fn connect_target_name(&self) -> Option<&str> {
+        self.pending_connect
+            .as_ref()
+            .map(|pending| ble_device_display_name(&pending.port_name))
+    }
+
+    fn poll_connect(&mut self) {
+        let mut completed: Option<Result<Connection>> = None;
+
+        if let Some(pending) = self.pending_connect.as_mut() {
+            loop {
+                match pending.events_rx.try_recv() {
+                    Ok(ConnectWorkerEvent::Progress(status)) => {
+                        pending.status = status;
+                    }
+                    Ok(ConnectWorkerEvent::Finished(result)) => {
+                        completed = Some(*result);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        completed = Some(Err(anyhow!("BLE connect worker exited unexpectedly")));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(result) = completed {
+            let pending = self.pending_connect.take().unwrap();
+            let cancelled = pending.cancel_flag.load(Ordering::Relaxed);
             match result {
-                Ok(()) => {
+                Ok(conn) if cancelled => {
+                    if let Err(err) = disconnect_connection(conn) {
+                        self.log(format!("Error: {}", err));
+                    }
+                    self.log(format!(
+                        "Cancelled connection to {}",
+                        ble_device_display_name(&pending.port_name)
+                    ));
+                }
+                Ok(conn) => {
+                    let port_name = pending.port_name;
                     self.conn = Some(conn);
+                    self.log(format!(
+                        "Connected to {}",
+                        ble_device_display_name(&port_name)
+                    ));
+                    self.send_ping();
+                }
+                Err(err) if cancelled => {
+                    self.log(format!(
+                        "Cancelled connection to {}",
+                        ble_device_display_name(&pending.port_name)
+                    ));
+                    if !err.to_string().to_ascii_lowercase().contains("cancelled") {
+                        self.log(format!("Connect worker stopped: {}", err));
+                    }
+                }
+                Err(err) => self.log(format!("Failed to connect: {}", err)),
+            }
+        }
+    }
+
+    fn poll_scan(&mut self) {
+        let result = self
+            .pending_scan
+            .as_ref()
+            .and_then(|pending| pending.result_rx.try_recv().ok());
+
+        if let Some(result) = result {
+            let pending = self.pending_scan.take().unwrap();
+            match result {
+                Ok(ports) => {
+                    self.ports = ports;
+                    if self.selected_port_idx >= self.ports.len() {
+                        self.selected_port_idx = 0;
+                    }
+                    self.log(format!("Found {} BLE device(s)", self.ports.len()));
+                }
+                Err(err) => self.log(format!("Scan failed: {}", err)),
+            }
+
+            let elapsed_ms = pending.started_at.elapsed().as_millis();
+            if elapsed_ms > 750 {
+                self.log(format!("Scan done in {} ms", elapsed_ms));
+            }
+        }
+    }
+
+    fn poll_disconnect(&mut self) {
+        let result = self
+            .pending_disconnect
+            .as_ref()
+            .and_then(|pending| pending.result_rx.try_recv().ok());
+
+        if let Some(result) = result {
+            let pending = self.pending_disconnect.take().unwrap();
+            match result {
+                Ok(()) => self.log(format!("Disconnected from {}", pending.port_name)),
+                Err(err) => self.log(format!("Disconnect failed: {}", err)),
+            }
+
+            let elapsed_ms = pending.started_at.elapsed().as_millis();
+            if elapsed_ms > 750 {
+                self.log(format!("Disconnect done in {} ms", elapsed_ms));
+            }
+        }
+    }
+
+    fn poll_command(&mut self) {
+        let result = self
+            .pending_command
+            .as_ref()
+            .and_then(|pending| pending.result_rx.try_recv().ok());
+
+        if let Some(result) = result {
+            let pending = self.pending_command.take().unwrap();
+            let CommandWorkerResult {
+                conn,
+                next_msg_id,
+                outcome,
+            } = result;
+
+            self.next_msg_id = next_msg_id;
+            match outcome {
+                Ok(messages) => {
+                    self.conn = Some(conn);
+                    for message in messages {
+                        self.log(message);
+                    }
                 }
                 Err(err) => {
                     let broken_pipe = is_broken_pipe_error(&err);
@@ -194,17 +529,94 @@ impl SharedController {
                     }
                 }
             }
-        } else {
-            self.log("Not connected");
+
+            let elapsed_ms = pending.started_at.elapsed().as_millis();
+            if elapsed_ms > 750 {
+                self.log(format!("{} done in {} ms", pending.label, elapsed_ms));
+            }
         }
     }
 
-    fn refresh_ports(&mut self) {
-        self.ports = list_ports();
-        if self.selected_port_idx >= self.ports.len() {
-            self.selected_port_idx = 0;
+    fn start_command(&mut self, request: CommandRequest) {
+        if self.pending_connect.is_some() {
+            self.log("Connection in progress");
+            return;
         }
-        self.log(format!("Found {} BLE device(s)", self.ports.len()));
+
+        if self.pending_scan.is_some() {
+            self.log("Scan in progress");
+            return;
+        }
+
+        if self.pending_disconnect.is_some() {
+            self.log("Disconnect in progress");
+            return;
+        }
+
+        if self.pending_command.is_some() {
+            self.log("Another command is already in progress");
+            return;
+        }
+
+        let Some(mut conn) = self.conn.take() else {
+            self.log("Not connected");
+            return;
+        };
+
+        let label = request.label();
+        let port_name = conn.port_name.clone();
+        let mut next_msg_id = self.next_msg_id;
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let outcome = request.execute(&mut conn, &mut next_msg_id);
+            let _ = result_tx.send(CommandWorkerResult {
+                conn,
+                next_msg_id,
+                outcome,
+            });
+        });
+
+        self.pending_command = Some(PendingCommand {
+            label: label.clone(),
+            port_name,
+            started_at: Instant::now(),
+            result_rx,
+        });
+        self.log(label);
+    }
+
+    fn scan_ports(&mut self) {
+        if self.pending_scan.is_some() {
+            self.log("Scan already in progress");
+            return;
+        }
+
+        if self.pending_connect.is_some() {
+            self.log("Connection in progress");
+            return;
+        }
+
+        if self.pending_disconnect.is_some() {
+            self.log("Disconnect in progress");
+            return;
+        }
+
+        if self.pending_command.is_some() {
+            self.log("Command in progress");
+            return;
+        }
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = result_tx.send(discover_ble_devices());
+        });
+
+        self.pending_scan = Some(PendingScan {
+            started_at: Instant::now(),
+            result_rx,
+        });
+        self.log(BLE_SCAN_STATUS);
     }
 
     fn connect(&mut self) {
@@ -213,117 +625,125 @@ impl SharedController {
             return;
         }
 
-        self.refresh_ports();
+        if self.pending_connect.is_some() {
+            self.log("Connection already in progress");
+            return;
+        }
+
+        if self.pending_scan.is_some() {
+            self.log("Scan in progress");
+            return;
+        }
+
+        if self.pending_disconnect.is_some() {
+            self.log("Disconnect in progress");
+            return;
+        }
 
         let Some(port_name) = self.selected_port_name().map(str::to_string) else {
             self.log("No BLE device selected");
             return;
         };
 
-        match Connection::new(port_name.clone()) {
-            Ok(conn) => {
-                self.conn = Some(conn);
-                self.log(format!(
-                    "Connected to {}",
-                    ble_device_display_name(&port_name)
-                ));
-                self.send_ping();
-            }
-            Err(err) => self.log(format!("Failed to connect: {}", err)),
-        }
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let worker_port_name = port_name.clone();
+        let worker_cancel_flag = Arc::clone(&cancel_flag);
+
+        std::thread::spawn(move || {
+            let result =
+                Connection::new_with_progress(worker_port_name, &worker_cancel_flag, |status| {
+                    let _ = events_tx.send(ConnectWorkerEvent::Progress(status.to_string()));
+                });
+            let _ = events_tx.send(ConnectWorkerEvent::Finished(Box::new(result)));
+        });
+
+        self.pending_connect = Some(PendingConnection {
+            port_name: port_name.clone(),
+            started_at: Instant::now(),
+            cancel_flag,
+            events_rx,
+            status: "Starting BLE scan...".to_string(),
+        });
+        self.log(format!(
+            "Connecting to {}",
+            ble_device_display_name(&port_name)
+        ));
     }
 
     fn disconnect(&mut self) {
+        if let Some(pending) = self.pending_connect.as_ref() {
+            pending.cancel_flag.store(true, Ordering::Relaxed);
+            self.log(format!(
+                "Cancelling connection to {}",
+                ble_device_display_name(&pending.port_name)
+            ));
+            return;
+        }
+
+        if self.pending_disconnect.is_some() {
+            self.log("Disconnect already in progress");
+            return;
+        }
+
+        if self.pending_scan.is_some() {
+            self.log("Scan in progress");
+            return;
+        }
+
         if let Some(conn) = self.conn.take() {
-            conn.runtime.block_on(async {
-                if let Err(err) = conn.peripheral.disconnect().await {
-                    self.log(format!("Error during disconnect: {}", err));
-                }
+            let port_name = conn.port_name.clone();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = result_tx.send(disconnect_connection(conn));
             });
-            self.log(format!("Disconnected from {}", conn.port_name));
+            self.pending_disconnect = Some(PendingDisconnect {
+                port_name: port_name.clone(),
+                started_at: Instant::now(),
+                result_rx,
+            });
+            self.log(format!("Disconnecting from {}", port_name));
+        } else if self.pending_command.is_some() {
+            self.log("Command in progress; wait for it to finish or time out");
         } else {
             self.log("Already disconnected");
         }
     }
 
     fn send_ping(&mut self) {
-        self.with_conn(|this, conn| {
-            send_ping_message(conn, &mut this.next_msg_id)?;
-            this.log("Ping ACKed");
-            Ok(())
-        });
+        self.start_command(CommandRequest::Ping);
     }
 
     fn send_servo(&mut self, angle_deg: f32) {
-        self.with_conn(|this, conn| {
-            send_servo_message(conn, &mut this.next_msg_id, angle_deg)?;
-            this.log(format!("SetServo {:.1} deg ACKed", angle_deg));
-            Ok(())
-        });
+        self.start_command(CommandRequest::Servo { angle_deg });
     }
 
     fn send_led(&mut self, pattern_id: u32, repeats: u32) {
-        self.with_conn(|this, conn| {
-            send_led_message(conn, &mut this.next_msg_id, pattern_id, repeats)?;
-            this.log(format!("LedAnimation p={} r={} ACKed", pattern_id, repeats));
-            Ok(())
+        self.start_command(CommandRequest::Led {
+            pattern_id,
+            repeats,
         });
     }
 
     fn send_icon(&mut self, icon_id: String) {
-        self.with_conn(|this, conn| {
-            send_icon_message(conn, &mut this.next_msg_id, &icon_id)?;
-            this.log(format!("ShowIcon '{}' ACKed", icon_id));
-            Ok(())
-        });
+        self.start_command(CommandRequest::Icon { icon_id });
     }
 
     fn send_notification_and_animation(&mut self, preset: &str, from: &str, text: &str) {
-        let (source_app, source_bundle_id, category, title, sender_name, app_icon_hint) =
-            default_notification_for_preset(preset, from, text);
-        let preset = preset.to_string();
-        let text = text.to_string();
-
-        self.with_conn(|this, conn| {
-            let notif_id = this.next_msg_id;
-            send_notification_message(
-                conn,
-                &mut this.next_msg_id,
-                pb::NotificationEvent {
-                    id: format!("gui-{}-{}", preset, notif_id),
-                    source_app: source_app.clone(),
-                    title: title.clone(),
-                    body: text.clone(),
-                    urgency: pb::Urgency::Normal as i32,
-                    category,
-                    source_bundle_id: source_bundle_id.clone(),
-                    sender_name: sender_name.clone(),
-                    sender_handle: String::new(),
-                    app_icon_hint: app_icon_hint.clone(),
-                },
-            )?;
-            this.log(format!("Notification '{}' ACKed", source_app));
-            Ok(())
-        });
-
-        self.with_conn(|this, conn| {
-            send_notification_animation(conn, &mut this.next_msg_id, category)?;
-            Ok(())
+        self.start_command(CommandRequest::NotificationAndAnimation {
+            preset: preset.to_string(),
+            from: from.to_string(),
+            text: text.to_string(),
         });
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn forward_desktop_notification(&mut self, event: ForwardedNotification) {
-        if self.conn.is_none() {
+        if self.conn.is_none() || self.pending_command.is_some() || self.pending_connect.is_some() {
             return;
         }
 
-        let source = event.source_app.clone();
-        self.with_conn(|this, conn| {
-            send_forwarded_notification(conn, &mut this.next_msg_id, &event)?;
-            this.log(format!("Forwarded desktop notification from '{}'", source));
-            Ok(())
-        });
+        self.start_command(CommandRequest::ForwardedNotification(event));
     }
 }
 
@@ -496,7 +916,25 @@ struct Connection {
 }
 
 impl Connection {
+    fn check_connect_cancelled(cancel_flag: &AtomicBool) -> Result<()> {
+        if cancel_flag.load(Ordering::Relaxed) {
+            bail!("BLE connection cancelled");
+        }
+        Ok(())
+    }
+
     fn new(port_name: String) -> Result<Self> {
+        Self::new_with_progress(port_name, &AtomicBool::new(false), |_| {})
+    }
+
+    fn new_with_progress<F>(
+        port_name: String,
+        cancel_flag: &AtomicBool,
+        mut on_progress: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(&str),
+    {
         let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
         let display_name = ble_device_display_name(&port_name).to_string();
         let selected_id = port_name
@@ -505,9 +943,14 @@ impl Connection {
             .unwrap_or_else(|| port_name.clone());
 
         let (peripheral, rx_char, tx_char, notifications_rx) = runtime.block_on(async {
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Creating BLE manager...");
             let manager = Manager::new()
                 .await
                 .context("failed to create BLE manager")?;
+            Self::check_connect_cancelled(cancel_flag)?;
+
+            on_progress("Looking for BLE adapters...");
             let adapters = manager
                 .adapters()
                 .await
@@ -516,12 +959,16 @@ impl Connection {
                 bail!("no BLE adapter available");
             };
 
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Scanning for BLE devices...");
             adapter
                 .start_scan(ScanFilter::default())
                 .await
                 .context("failed to start BLE scan")?;
             tokio::time::sleep(Duration::from_millis(1500)).await;
 
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Matching selected BLE device...");
             let service_uuid = ble_service_uuid()?;
             let rx_uuid = ble_rx_uuid()?;
             let tx_uuid = ble_tx_uuid()?;
@@ -563,10 +1010,15 @@ impl Connection {
             let peripheral =
                 selected.ok_or_else(|| anyhow!("BLE device '{}' not found", selected_id))?;
 
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Opening BLE link...");
             peripheral
                 .connect()
                 .await
                 .context("failed to connect BLE peripheral")?;
+            Self::check_connect_cancelled(cancel_flag)?;
+
+            on_progress("Discovering BLE services...");
             peripheral
                 .discover_services()
                 .await
@@ -584,11 +1036,15 @@ impl Connection {
                 .cloned()
                 .ok_or_else(|| anyhow!("BLE TX characteristic not found"))?;
 
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Subscribing to notifications...");
             peripheral
                 .subscribe(&tx_char)
                 .await
                 .context("failed to subscribe BLE TX characteristic")?;
 
+            Self::check_connect_cancelled(cancel_flag)?;
+            on_progress("Waiting for robot responses...");
             let mut notifications = peripheral
                 .notifications()
                 .await
@@ -622,10 +1078,14 @@ impl Connection {
             protocol::encode_frame(&msg).context("failed to encode framed protobuf message")?;
         for chunk in frame.chunks(180) {
             self.runtime.block_on(async {
-                self.peripheral
-                    .write(&self.rx_char, chunk, WriteType::WithResponse)
-                    .await
-                    .context("failed to write BLE RX chunk")
+                tokio::time::timeout(
+                    BLE_WRITE_TIMEOUT,
+                    self.peripheral
+                        .write(&self.rx_char, chunk, WriteType::WithResponse),
+                )
+                .await
+                .context("timed out writing BLE RX chunk")?
+                .context("failed to write BLE RX chunk")
             })?;
         }
         Ok(())
@@ -667,7 +1127,7 @@ impl Connection {
     fn send_and_wait_ack(&mut self, msg: pb::WireMessage) -> Result<()> {
         let msg_id = msg.msg_id;
         self.send_message(msg)?;
-        self.wait_for_ack(msg_id, Duration::from_secs(2))
+        self.wait_for_ack(msg_id, BLE_ACK_TIMEOUT)
     }
 }
 
@@ -1245,7 +1705,7 @@ struct LanderGui {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     tray_connect_id: Option<u32>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    last_tray_connected: Option<bool>,
+    last_tray_connected: Option<String>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     monitor_started: bool,
 }
@@ -1465,9 +1925,9 @@ impl LanderGui {
         {
             let controller = Arc::clone(&controller);
             let _id = tray
-                .add_menu_item_with_id("Refresh ports", move || {
+                .add_menu_item_with_id("Scan", move || {
                     if let Ok(mut controller) = controller.lock() {
-                        controller.refresh_ports();
+                        controller.scan_ports();
                     }
                 })
                 .context("failed to add tray menu item")?;
@@ -1480,7 +1940,7 @@ impl LanderGui {
             let id = tray
                 .add_menu_item_with_id("Connect", move || {
                     if let Ok(mut controller) = controller.lock() {
-                        if controller.is_connected() {
+                        if controller.is_connected() || controller.is_connecting() {
                             controller.disconnect();
                         } else {
                             controller.connect();
@@ -1590,6 +2050,21 @@ impl eframe::App for LanderGui {
             self.monitor_started = true;
         }
 
+        {
+            let mut controller = self.controller.lock().unwrap();
+            controller.poll_scan();
+            controller.poll_connect();
+            controller.poll_disconnect();
+            controller.poll_command();
+            if controller.is_scanning()
+                || controller.is_connecting()
+                || controller.is_disconnecting()
+                || controller.is_command_pending()
+            {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
+
         // ── Keyboard shortcut handling ──────────────────────────────────────
         // Read all key-presses in a single borrow, then act on them so that
         // we avoid holding the `input()` borrow while calling `&mut self`.
@@ -1615,30 +2090,42 @@ impl eframe::App for LanderGui {
         let any_widget_focused = ctx.memory(|m| m.focused().is_some());
         if !any_widget_focused {
             // Snapshot connection state needed to guard some shortcuts.
-            let connected = self.controller.lock().unwrap().is_connected();
+            let (connected, connecting, scanning, disconnecting, command_pending) = {
+                let controller = self.controller.lock().unwrap();
+                (
+                    controller.is_connected(),
+                    controller.is_connecting(),
+                    controller.is_scanning(),
+                    controller.is_disconnecting(),
+                    controller.is_command_pending(),
+                )
+            };
 
-            if key_c && !connected {
+            if key_c && !connected && !connecting && !scanning && !disconnecting {
                 self.controller.lock().unwrap().connect();
             }
-            if key_d && connected {
+            if key_d && connecting {
                 self.controller.lock().unwrap().disconnect();
             }
-            if key_p && connected {
+            if key_d && connected && !command_pending && !disconnecting {
+                self.controller.lock().unwrap().disconnect();
+            }
+            if key_p && connected && !command_pending {
                 self.controller.lock().unwrap().send_ping();
             }
-            if key_up && connected {
+            if key_up && connected && !command_pending {
                 self.servo_angle = (self.servo_angle + 5.0).min(270.0);
                 self.controller.lock().unwrap().send_servo(self.servo_angle);
             }
-            if key_down && connected {
+            if key_down && connected && !command_pending {
                 self.servo_angle = (self.servo_angle - 5.0).max(0.0);
                 self.controller.lock().unwrap().send_servo(self.servo_angle);
             }
-            if key_s && connected {
+            if key_s && connected && !command_pending {
                 self.controller.lock().unwrap().send_servo(self.servo_angle);
             }
             for (pressed, pattern) in [(key_1, 1u32), (key_2, 2), (key_3, 3), (key_4, 4)] {
-                if pressed && connected {
+                if pressed && connected && !command_pending {
                     self.led_pattern = pattern;
                     self.controller
                         .lock()
@@ -1646,7 +2133,7 @@ impl eframe::App for LanderGui {
                         .send_led(pattern, self.led_repeats);
                 }
             }
-            if key_n && connected {
+            if key_n && connected && !command_pending {
                 let (p, f, t) = (self.preset.clone(), self.from.clone(), self.text.clone());
                 self.controller
                     .lock()
@@ -1681,21 +2168,70 @@ impl eframe::App for LanderGui {
         if let (Some(tray), Some(status_id), Some(connect_id)) =
             (&mut self._tray, self.tray_status_id, self.tray_connect_id)
         {
-            let (is_connected, port_name) = {
+            let (
+                is_connected,
+                is_scanning,
+                is_connecting,
+                is_disconnecting,
+                command_pending,
+                port_name,
+                scan_status,
+                connect_target_name,
+                disconnect_status,
+                command_status,
+            ) = {
                 let ctrl = self.controller.lock().unwrap();
                 (
                     ctrl.is_connected(),
-                    ctrl.conn.as_ref().map(|c| c.port_name.clone()),
+                    ctrl.is_scanning(),
+                    ctrl.is_connecting(),
+                    ctrl.is_disconnecting(),
+                    ctrl.is_command_pending(),
+                    ctrl.connected_port_name().map(str::to_string),
+                    ctrl.scan_status().map(str::to_string),
+                    ctrl.connect_target_name().map(str::to_string),
+                    ctrl.disconnect_status(),
+                    ctrl.pending_command_status().map(str::to_string),
                 )
             };
-            if self.last_tray_connected != Some(is_connected) {
-                let status = if is_connected {
+            let tray_state = if is_scanning {
+                "scanning".to_string()
+            } else if is_connecting {
+                format!(
+                    "connecting:{}",
+                    connect_target_name.clone().unwrap_or_default()
+                )
+            } else if is_disconnecting {
+                format!("disconnecting:{}", port_name.clone().unwrap_or_default())
+            } else if command_pending {
+                format!("busy:{}", command_status.clone().unwrap_or_default())
+            } else if is_connected {
+                format!("connected:{}", port_name.clone().unwrap_or_default())
+            } else {
+                "disconnected".to_string()
+            };
+            if self.last_tray_connected.as_deref() != Some(tray_state.as_str()) {
+                let status = if is_scanning {
+                    scan_status.unwrap_or_else(|| "◌ Scanning...".to_string())
+                } else if is_connecting {
+                    format!("◌ Connecting: {}", connect_target_name.unwrap_or_default())
+                } else if is_disconnecting {
+                    disconnect_status.unwrap_or_else(|| "◌ Disconnecting...".to_string())
+                } else if command_pending {
+                    command_status.unwrap_or_else(|| "◌ Working...".to_string())
+                } else if is_connected {
                     format!("● Connected: {}", port_name.unwrap_or_default())
                 } else {
                     "● Disconnected".to_string()
                 };
                 let _ = tray.set_item_label(status_id, &status);
-                let connect_label = if is_connected {
+                let connect_label = if is_scanning {
+                    "Scan"
+                } else if is_connecting {
+                    "Cancel connect"
+                } else if is_disconnecting {
+                    "Disconnecting..."
+                } else if is_connected {
                     "Disconnect"
                 } else {
                     "Connect"
@@ -1703,18 +2239,62 @@ impl eframe::App for LanderGui {
                 let _ = tray.set_item_label(connect_id, connect_label);
                 #[cfg(target_os = "macos")]
                 {
-                    let symbol = if is_connected { "wifi.slash" } else { "wifi" };
+                    let symbol = if is_scanning {
+                        "magnifyingglass"
+                    } else if is_connecting || is_disconnecting {
+                        "hourglass"
+                    } else if is_connected {
+                        "wifi.slash"
+                    } else {
+                        "wifi"
+                    };
                     tray.inner_mut().set_item_sf_symbol(connect_id, symbol);
                 }
-                self.last_tray_connected = Some(is_connected);
+                self.last_tray_connected = Some(tray_state);
             }
         }
 
-        let (connected, conn_port_name, ports, mut selected_port_idx, logs) = {
+        let (
+            connected,
+            scanning,
+            connecting,
+            disconnecting,
+            command_pending,
+            conn_port_name,
+            scan_status,
+            connect_status,
+            disconnect_status,
+            command_status,
+            scan_started_at,
+            connect_started_at,
+            disconnect_started_at,
+            command_started_at,
+            ports,
+            mut selected_port_idx,
+            logs,
+        ) = {
             let ctrl = self.controller.lock().unwrap();
             (
-                ctrl.conn.is_some(),
-                ctrl.conn.as_ref().map(|c| c.port_name.clone()),
+                ctrl.is_connected(),
+                ctrl.is_scanning(),
+                ctrl.pending_connect.is_some(),
+                ctrl.is_disconnecting(),
+                ctrl.is_command_pending(),
+                ctrl.connected_port_name().map(str::to_string),
+                ctrl.scan_status().map(str::to_string),
+                ctrl.connect_status().map(str::to_string),
+                ctrl.disconnect_status(),
+                ctrl.pending_command_status().map(str::to_string),
+                ctrl.pending_scan.as_ref().map(|pending| pending.started_at),
+                ctrl.pending_connect
+                    .as_ref()
+                    .map(|pending| pending.started_at),
+                ctrl.pending_disconnect
+                    .as_ref()
+                    .map(|pending| pending.started_at),
+                ctrl.pending_command
+                    .as_ref()
+                    .map(|pending| pending.started_at),
                 ctrl.ports.clone(),
                 ctrl.selected_port_idx,
                 ctrl.logs.clone(),
@@ -1730,7 +2310,35 @@ impl eframe::App for LanderGui {
                 ui.heading("landerctl");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(ref port_name) = conn_port_name {
+                    if scanning {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(
+                            scan_status
+                                .clone()
+                                .unwrap_or_else(|| "scanning".to_string()),
+                        );
+                    } else if connecting {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(
+                            connect_status
+                                .clone()
+                                .unwrap_or_else(|| "connecting".to_string()),
+                        );
+                    } else if disconnecting {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(
+                            disconnect_status
+                                .clone()
+                                .unwrap_or_else(|| "disconnecting".to_string()),
+                        );
+                    } else if command_pending {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(
+                            command_status
+                                .clone()
+                                .unwrap_or_else(|| "working".to_string()),
+                        );
+                    } else if let Some(ref port_name) = conn_port_name {
                         ui.label(format!("connected: {}", port_name));
                         ui.colored_label(egui::Color32::from_rgb(40, 220, 120), "●");
                     } else {
@@ -1755,20 +2363,102 @@ impl eframe::App for LanderGui {
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Refresh ports").clicked() {
-                            self.controller.lock().unwrap().refresh_ports();
+                        if ui
+                            .add_enabled(
+                                !(scanning || connecting || disconnecting || command_pending),
+                                egui::Button::new("Scan"),
+                            )
+                            .clicked()
+                        {
+                            self.controller.lock().unwrap().scan_ports();
                         }
 
-                        if !connected {
+                        if scanning {
+                            ui.add_enabled(false, egui::Button::new("Connect"));
+                            Self::shortcut_hint(ui, &["..."]);
+                        } else if connecting {
+                            if ui.button("Cancel").clicked() {
+                                self.controller.lock().unwrap().disconnect();
+                            }
+                            Self::shortcut_hint(ui, &["D"]);
+                        } else if !connected {
                             if ui.button("Connect").clicked() {
                                 self.controller.lock().unwrap().connect();
                             }
                             Self::shortcut_hint(ui, &["C"]);
-                        } else if ui.button("Disconnect").clicked() {
+                        } else if disconnecting {
+                            ui.add_enabled(false, egui::Button::new("Disconnecting..."));
+                            Self::shortcut_hint(ui, &["..."]);
+                        } else if ui
+                            .add_enabled(!command_pending, egui::Button::new("Disconnect"))
+                            .clicked()
+                        {
                             self.controller.lock().unwrap().disconnect();
                             Self::shortcut_hint(ui, &["D"]);
                         }
                     });
+
+                    if scanning {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            let elapsed = scan_started_at
+                                .map(|started| started.elapsed().as_secs_f32())
+                                .unwrap_or_default();
+                            ui.label(format!(
+                                "{} ({:.1}s)",
+                                scan_status
+                                    .clone()
+                                    .unwrap_or_else(|| BLE_SCAN_STATUS.to_string()),
+                                elapsed
+                            ));
+                        });
+                    } else if connecting {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            let elapsed = connect_started_at
+                                .map(|started| started.elapsed().as_secs_f32())
+                                .unwrap_or_default();
+                            ui.label(format!(
+                                "{} ({:.1}s)",
+                                connect_status
+                                    .clone()
+                                    .unwrap_or_else(|| "Connecting via BLE...".to_string()),
+                                elapsed
+                            ));
+                        });
+                    } else if disconnecting {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            let elapsed = disconnect_started_at
+                                .map(|started| started.elapsed().as_secs_f32())
+                                .unwrap_or_default();
+                            ui.label(format!(
+                                "{} ({:.1}s)",
+                                disconnect_status
+                                    .clone()
+                                    .unwrap_or_else(|| "Disconnecting via BLE...".to_string()),
+                                elapsed
+                            ));
+                        });
+                    } else if command_pending {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(16.0));
+                            let elapsed = command_started_at
+                                .map(|started| started.elapsed().as_secs_f32())
+                                .unwrap_or_default();
+                            ui.label(format!(
+                                "{} ({:.1}s)",
+                                command_status
+                                    .clone()
+                                    .unwrap_or_else(|| "Waiting for BLE response...".to_string()),
+                                elapsed
+                            ));
+                        });
+                    }
 
                     ui.horizontal(|ui| {
                         ui.label("BLE device");
@@ -1781,20 +2471,25 @@ impl eframe::App for LanderGui {
                                     .unwrap_or("(none)"),
                             )
                             .show_ui(ui, |ui| {
-                                for (idx, name) in ports.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut selected_port_idx,
-                                        idx,
-                                        ble_device_display_name(name),
-                                    );
-                                }
+                                ui.add_enabled_ui(
+                                    !(scanning || connecting || disconnecting || command_pending),
+                                    |ui| {
+                                        for (idx, name) in ports.iter().enumerate() {
+                                            ui.selectable_value(
+                                                &mut selected_port_idx,
+                                                idx,
+                                                ble_device_display_name(name),
+                                            );
+                                        }
+                                    },
+                                );
                             });
                         if selected_port_idx != old_idx {
                             self.controller.lock().unwrap().selected_port_idx = selected_port_idx;
                         }
                     });
 
-                    ui.add_enabled_ui(connected, |ui| {
+                    ui.add_enabled_ui(connected && !command_pending, |ui| {
                         ui.horizontal(|ui| {
                             if ui.button("Ping").clicked() {
                                 self.controller.lock().unwrap().send_ping();
@@ -1814,7 +2509,7 @@ impl eframe::App for LanderGui {
                     );
                     ui.add_space(8.0);
 
-                    ui.add_enabled_ui(connected, |ui| {
+                    ui.add_enabled_ui(connected && !command_pending, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Servo");
                             ui.add(
@@ -1864,7 +2559,7 @@ impl eframe::App for LanderGui {
                     );
                     ui.add_space(8.0);
 
-                    ui.add_enabled_ui(connected, |ui| {
+                    ui.add_enabled_ui(connected && !command_pending, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Preset");
                             egui::ComboBox::from_id_salt("preset_combo")
