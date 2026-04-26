@@ -456,88 +456,113 @@ impl SharedController {
     }
 
     fn poll_scan(&mut self) {
-        let result = self
+        let recv_result = self
             .pending_scan
             .as_ref()
-            .and_then(|pending| pending.result_rx.try_recv().ok());
+            .map(|pending| pending.result_rx.try_recv());
 
-        if let Some(result) = result {
-            let pending = self.pending_scan.take().unwrap();
-            match result {
-                Ok(ports) => {
-                    self.ports = ports;
-                    if self.selected_port_idx >= self.ports.len() {
-                        self.selected_port_idx = 0;
+        match recv_result {
+            Some(Ok(result)) => {
+                let pending = self.pending_scan.take().unwrap();
+                match result {
+                    Ok(ports) => {
+                        self.ports = ports;
+                        if self.selected_port_idx >= self.ports.len() {
+                            self.selected_port_idx = 0;
+                        }
+                        self.log(format!("Found {} BLE device(s)", self.ports.len()));
                     }
-                    self.log(format!("Found {} BLE device(s)", self.ports.len()));
+                    Err(err) => self.log(format!("Scan failed: {}", err)),
                 }
-                Err(err) => self.log(format!("Scan failed: {}", err)),
+                let elapsed_ms = pending.started_at.elapsed().as_millis();
+                if elapsed_ms > 750 {
+                    self.log(format!("Scan done in {} ms", elapsed_ms));
+                }
             }
-
-            let elapsed_ms = pending.started_at.elapsed().as_millis();
-            if elapsed_ms > 750 {
-                self.log(format!("Scan done in {} ms", elapsed_ms));
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                self.pending_scan = None;
+                self.log("Scan worker exited unexpectedly".to_string());
             }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
         }
     }
 
     fn poll_disconnect(&mut self) {
-        let result = self
+        let recv_result = self
             .pending_disconnect
             .as_ref()
-            .and_then(|pending| pending.result_rx.try_recv().ok());
+            .map(|pending| pending.result_rx.try_recv());
 
-        if let Some(result) = result {
-            let pending = self.pending_disconnect.take().unwrap();
-            match result {
-                Ok(()) => self.log(format!("Disconnected from {}", pending.port_name)),
-                Err(err) => self.log(format!("Disconnect failed: {}", err)),
+        match recv_result {
+            Some(Ok(result)) => {
+                let pending = self.pending_disconnect.take().unwrap();
+                match result {
+                    Ok(()) => self.log(format!("Disconnected from {}", pending.port_name)),
+                    Err(err) => self.log(format!("Disconnect failed: {}", err)),
+                }
+                let elapsed_ms = pending.started_at.elapsed().as_millis();
+                if elapsed_ms > 750 {
+                    self.log(format!("Disconnect done in {} ms", elapsed_ms));
+                }
             }
-
-            let elapsed_ms = pending.started_at.elapsed().as_millis();
-            if elapsed_ms > 750 {
-                self.log(format!("Disconnect done in {} ms", elapsed_ms));
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                let pending = self.pending_disconnect.take().unwrap();
+                self.log(format!(
+                    "Disconnect worker for {} exited unexpectedly",
+                    pending.port_name
+                ));
             }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
         }
     }
 
     fn poll_command(&mut self) {
-        let result = self
+        let recv_result = self
             .pending_command
             .as_ref()
-            .and_then(|pending| pending.result_rx.try_recv().ok());
+            .map(|pending| pending.result_rx.try_recv());
 
-        if let Some(result) = result {
-            let pending = self.pending_command.take().unwrap();
-            let CommandWorkerResult {
-                conn,
-                next_msg_id,
-                outcome,
-            } = result;
+        match recv_result {
+            Some(Ok(result)) => {
+                let pending = self.pending_command.take().unwrap();
+                let CommandWorkerResult {
+                    conn,
+                    next_msg_id,
+                    outcome,
+                } = result;
 
-            self.next_msg_id = next_msg_id;
-            match outcome {
-                Ok(messages) => {
-                    self.conn = Some(conn);
-                    for message in messages {
-                        self.log(message);
-                    }
-                }
-                Err(err) => {
-                    let broken_pipe = is_broken_pipe_error(&err);
-                    self.log(format!("Error: {}", err));
-                    if broken_pipe {
-                        self.log(format!("Connection lost on {}", conn.port_name));
-                    } else {
+                self.next_msg_id = next_msg_id;
+                match outcome {
+                    Ok(messages) => {
                         self.conn = Some(conn);
+                        for message in messages {
+                            self.log(message);
+                        }
+                    }
+                    Err(err) => {
+                        let broken_pipe = is_broken_pipe_error(&err);
+                        self.log(format!("Error: {}", err));
+                        if broken_pipe {
+                            self.log(format!("Connection lost on {}", conn.port_name));
+                        } else {
+                            self.conn = Some(conn);
+                        }
                     }
                 }
-            }
 
-            let elapsed_ms = pending.started_at.elapsed().as_millis();
-            if elapsed_ms > 750 {
-                self.log(format!("{} done in {} ms", pending.label, elapsed_ms));
+                let elapsed_ms = pending.started_at.elapsed().as_millis();
+                if elapsed_ms > 750 {
+                    self.log(format!("{} done in {} ms", pending.label, elapsed_ms));
+                }
             }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                let pending = self.pending_command.take().unwrap();
+                self.log(format!(
+                    "Connection lost on {} (command worker exited unexpectedly)",
+                    pending.port_name
+                ));
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
         }
     }
 
