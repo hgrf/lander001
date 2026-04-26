@@ -14,6 +14,7 @@ use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver};
 use esp_idf_svc::hal::units::FromValueType;
 use esp_idf_svc::hal::usb_serial::{UsbSerialConfig, UsbSerialDriver};
+use esp_idf_sys::*;
 
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
@@ -635,6 +636,22 @@ fn servo_angle_to_duty(angle_deg: f32, max_duty: u32) -> u32 {
     ((pulse_us / period_us) * (max_duty as f32)) as u32
 }
 
+#[inline]
+fn gpio_reset_without_pull(pin: gpio_num_t) -> Result<(), EspError> {
+    let cfg = gpio_config_t {
+        pin_bit_mask: (1u64 << pin),
+        mode: esp_idf_sys::gpio_mode_t_GPIO_MODE_DISABLE,
+        pull_up_en: esp_idf_sys::gpio_pullup_t_GPIO_PULLUP_DISABLE,
+        pull_down_en: esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_DISABLE,
+        intr_type: esp_idf_sys::gpio_int_type_t_GPIO_INTR_DISABLE,
+    };
+
+    unsafe {
+        esp!(gpio_config(&cfg))?;
+    }
+    Ok(())
+}
+
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -666,6 +683,8 @@ fn main() {
         .unwrap();
     log::info!("Servo initialized on GPIO5 at 90 degrees");
 
+    gpio_reset_without_pull(gpio_num_t_GPIO_NUM_20).unwrap();
+    gpio_reset_without_pull(gpio_num_t_GPIO_NUM_21).unwrap();
     let mut drive = ShiftRegister::new(
         DummyPin::new_high(),
         PinDriver::output(peripherals.pins.gpio10).unwrap(),
