@@ -480,7 +480,7 @@ impl SharedController {
                 }
             }
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                self.pending_scan = None;
+                self.pending_scan.take();
                 self.log("Scan worker exited unexpectedly".to_string());
             }
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => {}
@@ -558,7 +558,7 @@ impl SharedController {
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                 let pending = self.pending_command.take().unwrap();
                 self.log(format!(
-                    "Connection lost on {} (command worker exited unexpectedly)",
+                    "Command worker for {} exited unexpectedly",
                     pending.port_name
                 ));
             }
