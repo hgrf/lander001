@@ -1074,13 +1074,11 @@ impl Connection {
 
             Self::check_connect_cancelled(cancel_flag)?;
             on_progress("Waiting for robot responses...");
-            let mut notifications = tokio::time::timeout(
-                BLE_NOTIFICATIONS_TIMEOUT,
-                peripheral.notifications(),
-            )
-            .await
-            .context("timed out opening BLE notification stream")?
-            .context("failed to open BLE notification stream")?;
+            let mut notifications =
+                tokio::time::timeout(BLE_NOTIFICATIONS_TIMEOUT, peripheral.notifications())
+                    .await
+                    .context("timed out opening BLE notification stream")?
+                    .context("failed to open BLE notification stream")?;
             let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
 
             tokio::spawn(async move {
