@@ -33,7 +33,7 @@ use zbus::fdo::Error as ZbusFdoError;
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value as ZvariantValue};
+use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value as ZvariantValue};
 
 #[path = "../../shared/protocol.rs"]
 mod protocol;
@@ -1522,6 +1522,14 @@ fn start_bluez_pairing_agent() -> Result<()> {
             return;
         }
 
+        let agent_path = match ObjectPath::try_from(BLUEZ_AGENT_PATH) {
+            Ok(p) => p,
+            Err(err) => {
+                let _ = ready_tx.send(Err(format!("invalid BlueZ agent path: {}", err)));
+                return;
+            }
+        };
+
         let manager =
             match ZbusProxy::new(&conn, "org.bluez", "/org/bluez", "org.bluez.AgentManager1") {
                 Ok(p) => p,
@@ -1535,14 +1543,14 @@ fn start_bluez_pairing_agent() -> Result<()> {
             };
 
         if let Err(err) =
-            manager.call::<_, _, ()>("RegisterAgent", &(BLUEZ_AGENT_PATH, BLUEZ_AGENT_CAPABILITY))
+            manager.call::<_, _, ()>("RegisterAgent", &(&agent_path, BLUEZ_AGENT_CAPABILITY))
         {
             let _ = ready_tx.send(Err(format!("failed to register BlueZ agent: {}", err)));
             return;
         }
 
         // Some systems require policy to set default agent; ignore failures and keep our app-local agent.
-        let _ = manager.call::<_, _, ()>("RequestDefaultAgent", &(BLUEZ_AGENT_PATH,));
+        let _ = manager.call::<_, _, ()>("RequestDefaultAgent", &(&agent_path,));
 
         let _ = ready_tx.send(Ok(()));
 
