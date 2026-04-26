@@ -20,6 +20,8 @@ opt-level = "z"
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+# NOTE: only for GPIO20/21 workaround
+esp-idf-sys = "0.37.2"
 # Remove `generic-queue-8` if you plan to use `embassy-time` WITH `embassy-executor`
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 mipidsi = "0.9.0"
