@@ -1116,6 +1116,8 @@ struct LedAnimator {
     step: u32,
     phase: bool,
     next_at: Option<std::time::Instant>,
+    idle_led4_on: bool,
+    idle_next_toggle_at: std::time::Instant,
 }
 
 impl LedAnimator {
@@ -1126,7 +1128,40 @@ impl LedAnimator {
             step: 0,
             phase: false,
             next_at: None,
+            idle_led4_on: false,
+            idle_next_toggle_at: std::time::Instant::now(),
         }
+    }
+
+    fn idle_mask(&self) -> u8 {
+        (1_u8 << 1) | if self.idle_led4_on { 1_u8 << 4 } else { 0 }
+    }
+
+    fn next_idle_interval_ms() -> u64 {
+        const MIN_MS: u64 = 100;
+        const MAX_MS: u64 = 2000;
+        const SPAN: u64 = MAX_MS - MIN_MS + 1;
+        MIN_MS + (unsafe { esp_random() as u64 } % SPAN)
+    }
+
+    fn tick_idle<OE, SER, SRCLR, SRCLK, RCLK>(
+        &mut self,
+        drive: &mut ShiftRegister<OE, SER, SRCLR, SRCLK, RCLK>,
+        now: std::time::Instant,
+    ) where
+        OE: embedded_hal::digital::OutputPin,
+        SER: embedded_hal::digital::OutputPin,
+        SRCLR: embedded_hal::digital::OutputPin,
+        SRCLK: embedded_hal::digital::OutputPin,
+        RCLK: embedded_hal::digital::OutputPin,
+    {
+        if now >= self.idle_next_toggle_at {
+            self.idle_led4_on = !self.idle_led4_on;
+            self.idle_next_toggle_at =
+                now + std::time::Duration::from_millis(Self::next_idle_interval_ms());
+        }
+
+        drive.load(self.idle_mask());
     }
 
     fn schedule(&mut self, pattern_id: u32, repeats: u32) {
@@ -1149,6 +1184,7 @@ impl LedAnimator {
         RCLK: embedded_hal::digital::OutputPin,
     {
         if self.repeats_left == 0 {
+            self.tick_idle(drive, now);
             return;
         }
 
@@ -1203,8 +1239,8 @@ impl LedAnimator {
         };
 
         if self.repeats_left == 0 {
-            drive.load(0x00);
             self.next_at = None;
+            self.tick_idle(drive, now);
         } else {
             self.next_at = Some(now + std::time::Duration::from_millis(wait_ms));
         }
@@ -1423,7 +1459,7 @@ fn main() {
     );
     drive.begin();
     drive.enable_output();
-    drive.load(0x01);
+    drive.load(1_u8 << 1);
 
     let pairing_button = PinDriver::input(peripherals.pins.gpio9, Pull::Up).unwrap();
 
