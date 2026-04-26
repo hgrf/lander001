@@ -2,7 +2,6 @@
 use std::collections::HashMap;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::{BufRead, BufReader};
-use std::io::{Read, Write};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,12 +9,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use btleplug::api::{
+    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
+    WriteType,
+};
+use btleplug::platform::{Manager, Peripheral};
 use clap::Parser;
 use eframe::egui;
 use egui_phosphor::regular;
+use futures_util::StreamExt;
 #[cfg(target_os = "macos")]
 use serde_json::Value;
-use serialport::SerialPort;
+use uuid::Uuid;
 
 #[path = "../../shared/protocol.rs"]
 mod protocol;
@@ -23,29 +28,87 @@ mod protocol;
 use protocol::pb;
 
 fn list_ports() -> Vec<String> {
-    let mut names = serialport::available_ports()
-        .map(|ports| ports.into_iter().map(|p| p.port_name).collect::<Vec<_>>())
-        .unwrap_or_default();
+    discover_ble_devices().unwrap_or_default()
+}
 
-    fn port_priority(name: &str) -> u8 {
-        let lower = name.to_ascii_lowercase();
+pub const BLE_SERVICE_UUID: &str = "0ad91b20-1734-4047-9e17-3bed82d75f9d";
+pub const BLE_TX_CHAR_UUID: &str = "503de214-8682-46c4-828f-d59144da41be";
+pub const BLE_RX_CHAR_UUID: &str = "b6fccb50-87be-44f3-ae22-f85485ea42c4";
 
-        if lower.contains("/dev/cu.usb") || lower.contains("/dev/ttyusb") {
-            0
-        } else if lower.contains("/dev/cu.") || lower.contains("/dev/tty") {
-            1
-        } else {
-            2
+fn ble_service_uuid() -> Result<Uuid> {
+    Uuid::parse_str(BLE_SERVICE_UUID)
+        .with_context(|| format!("invalid BLE service UUID {}", BLE_SERVICE_UUID))
+}
+
+fn ble_tx_uuid() -> Result<Uuid> {
+    Uuid::parse_str(BLE_TX_CHAR_UUID)
+        .with_context(|| format!("invalid BLE TX UUID {}", BLE_TX_CHAR_UUID))
+}
+
+fn ble_rx_uuid() -> Result<Uuid> {
+    Uuid::parse_str(BLE_RX_CHAR_UUID)
+        .with_context(|| format!("invalid BLE RX UUID {}", BLE_RX_CHAR_UUID))
+}
+
+fn ble_device_display_name(label: &str) -> &str {
+    label.split_once('|').map(|(_, name)| name).unwrap_or(label)
+}
+
+fn discover_ble_devices() -> Result<Vec<String>> {
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    rt.block_on(async {
+        let manager = Manager::new()
+            .await
+            .context("failed to create BLE manager")?;
+        let adapters = manager
+            .adapters()
+            .await
+            .context("failed to enumerate BLE adapters")?;
+        let Some(adapter) = adapters.into_iter().next() else {
+            bail!("no BLE adapter available");
+        };
+
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .context("failed to start BLE scan")?;
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+
+        let service_uuid = ble_service_uuid()?;
+        let peripherals = adapter
+            .peripherals()
+            .await
+            .context("failed to fetch scanned peripherals")?;
+
+        let mut labels = Vec::new();
+        for peripheral in peripherals {
+            let Some(props) = peripheral
+                .properties()
+                .await
+                .context("failed to read BLE peripheral properties")?
+            else {
+                continue;
+            };
+
+            let has_service = props.services.contains(&service_uuid);
+            let name_matches = props
+                .local_name
+                .as_ref()
+                .map(|name| {
+                    name.to_ascii_lowercase()
+                        .contains(&protocol::BLE_DEVICE_NAME.to_ascii_lowercase())
+                })
+                .unwrap_or(false);
+
+            if has_service || name_matches {
+                let local_name = props.local_name.unwrap_or_else(|| "(unnamed)".to_string());
+                labels.push(format!("{}|{}", peripheral.id(), local_name));
+            }
         }
-    }
 
-    names.sort_by(|a, b| {
-        let pa = port_priority(a);
-        let pb = port_priority(b);
-        pa.cmp(&pb).then_with(|| a.cmp(b))
-    });
-
-    names
+        labels.sort();
+        Ok(labels)
+    })
 }
 
 struct SharedController {
@@ -141,7 +204,7 @@ impl SharedController {
         if self.selected_port_idx >= self.ports.len() {
             self.selected_port_idx = 0;
         }
-        self.log(format!("Found {} serial port(s)", self.ports.len()));
+        self.log(format!("Found {} BLE device(s)", self.ports.len()));
     }
 
     fn connect(&mut self) {
@@ -153,14 +216,17 @@ impl SharedController {
         self.refresh_ports();
 
         let Some(port_name) = self.selected_port_name().map(str::to_string) else {
-            self.log("No serial port selected");
+            self.log("No BLE device selected");
             return;
         };
 
         match Connection::new(port_name.clone()) {
             Ok(conn) => {
                 self.conn = Some(conn);
-                self.log(format!("Connected to {}", port_name));
+                self.log(format!(
+                    "Connected to {}",
+                    ble_device_display_name(&port_name)
+                ));
                 self.send_ping();
             }
             Err(err) => self.log(format!("Failed to connect: {}", err)),
@@ -169,6 +235,11 @@ impl SharedController {
 
     fn disconnect(&mut self) {
         if let Some(conn) = self.conn.take() {
+            conn.runtime.block_on(async {
+                if let Err(err) = conn.peripheral.disconnect().await {
+                    self.log(format!("Error during disconnect: {}", err));
+                }
+            });
             self.log(format!("Disconnected from {}", conn.port_name));
         } else {
             self.log("Already disconnected");
@@ -416,20 +487,132 @@ fn send_forwarded_notification(
 
 struct Connection {
     port_name: String,
-    port: Box<dyn SerialPort>,
+    runtime: tokio::runtime::Runtime,
+    peripheral: Peripheral,
+    rx_char: Characteristic,
+    _tx_char: Characteristic,
+    notifications_rx: std::sync::mpsc::Receiver<Vec<u8>>,
     decoder: protocol::StreamDecoder,
 }
 
 impl Connection {
     fn new(port_name: String) -> Result<Self> {
-        let port = serialport::new(&port_name, 115_200)
-            .timeout(Duration::from_millis(150))
-            .open()
-            .with_context(|| format!("failed to open serial port {}", port_name))?;
+        let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+        let display_name = ble_device_display_name(&port_name).to_string();
+        let selected_id = port_name
+            .split_once('|')
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_else(|| port_name.clone());
+
+        let (peripheral, rx_char, tx_char, notifications_rx) = runtime.block_on(async {
+            let manager = Manager::new()
+                .await
+                .context("failed to create BLE manager")?;
+            let adapters = manager
+                .adapters()
+                .await
+                .context("failed to enumerate BLE adapters")?;
+            let Some(adapter) = adapters.into_iter().next() else {
+                bail!("no BLE adapter available");
+            };
+
+            adapter
+                .start_scan(ScanFilter::default())
+                .await
+                .context("failed to start BLE scan")?;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+
+            let service_uuid = ble_service_uuid()?;
+            let rx_uuid = ble_rx_uuid()?;
+            let tx_uuid = ble_tx_uuid()?;
+
+            let peripherals = adapter
+                .peripherals()
+                .await
+                .context("failed to list BLE peripherals")?;
+
+            let mut selected: Option<Peripheral> = None;
+            for peripheral in peripherals {
+                let Some(props) = peripheral
+                    .properties()
+                    .await
+                    .context("failed to read BLE peripheral properties")?
+                else {
+                    continue;
+                };
+
+                let id_text = peripheral.id().to_string();
+                let local_name = props.local_name.unwrap_or_default();
+                let has_service = props.services.contains(&service_uuid);
+
+                if id_text == selected_id
+                    || local_name
+                        .to_ascii_lowercase()
+                        .contains(&selected_id.to_ascii_lowercase())
+                    || (selected_id.eq_ignore_ascii_case(protocol::BLE_DEVICE_NAME)
+                        && (has_service
+                            || local_name
+                                .to_ascii_lowercase()
+                                .contains(&protocol::BLE_DEVICE_NAME.to_ascii_lowercase())))
+                {
+                    selected = Some(peripheral);
+                    break;
+                }
+            }
+
+            let peripheral =
+                selected.ok_or_else(|| anyhow!("BLE device '{}' not found", selected_id))?;
+
+            peripheral
+                .connect()
+                .await
+                .context("failed to connect BLE peripheral")?;
+            peripheral
+                .discover_services()
+                .await
+                .context("failed to discover BLE services")?;
+
+            let chars = peripheral.characteristics();
+            let rx_char = chars
+                .iter()
+                .find(|c| c.uuid == rx_uuid)
+                .cloned()
+                .ok_or_else(|| anyhow!("BLE RX characteristic not found"))?;
+            let tx_char = chars
+                .iter()
+                .find(|c| c.uuid == tx_uuid)
+                .cloned()
+                .ok_or_else(|| anyhow!("BLE TX characteristic not found"))?;
+
+            peripheral
+                .subscribe(&tx_char)
+                .await
+                .context("failed to subscribe BLE TX characteristic")?;
+
+            let mut notifications = peripheral
+                .notifications()
+                .await
+                .context("failed to open BLE notification stream")?;
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
+
+            tokio::spawn(async move {
+                while let Some(ValueNotification { value, .. }) = notifications.next().await {
+                    if tx.send(value).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Ok::<_, anyhow::Error>((peripheral, rx_char, tx_char, rx))
+        })?;
 
         Ok(Self {
-            port_name,
-            port,
+            port_name: display_name,
+            runtime,
+            peripheral,
+            rx_char,
+            _tx_char: tx_char,
+            notifications_rx,
             decoder: protocol::StreamDecoder::new(),
         })
     }
@@ -437,36 +620,44 @@ impl Connection {
     fn send_message(&mut self, msg: pb::WireMessage) -> Result<()> {
         let frame =
             protocol::encode_frame(&msg).context("failed to encode framed protobuf message")?;
-        self.port
-            .write_all(&frame)
-            .context("failed to write framed protobuf message")?;
-        self.port.flush().context("failed to flush serial port")?;
+        for chunk in frame.chunks(180) {
+            self.runtime.block_on(async {
+                self.peripheral
+                    .write(&self.rx_char, chunk, WriteType::WithResponse)
+                    .await
+                    .context("failed to write BLE RX chunk")
+            })?;
+        }
         Ok(())
     }
 
     fn wait_for_ack(&mut self, expected_msg_id: u32, timeout: Duration) -> Result<()> {
         let start = Instant::now();
-        let mut temp = [0_u8; 256];
 
         while start.elapsed() < timeout {
-            match self.port.read(&mut temp) {
-                Ok(n) if n > 0 => {
-                    self.decoder.push_bytes(&temp[..n]);
-                    while let Some(result) = self.decoder.next_message() {
-                        let msg = result.context("failed to decode inbound frame")?;
-                        if let Some(pb::wire_message::Payload::Ack(ack)) = msg.payload {
-                            if ack.msg_id == expected_msg_id {
-                                if ack.ok {
-                                    return Ok(());
-                                }
-                                bail!("firmware NACK for {}: {}", expected_msg_id, ack.error);
-                            }
+            match self
+                .notifications_rx
+                .recv_timeout(Duration::from_millis(80))
+            {
+                Ok(bytes) => {
+                    self.decoder.push_bytes(&bytes);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("BLE notification stream closed")
+                }
+            }
+
+            while let Some(result) = self.decoder.next_message() {
+                let msg = result.context("failed to decode inbound frame")?;
+                if let Some(pb::wire_message::Payload::Ack(ack)) = msg.payload {
+                    if ack.msg_id == expected_msg_id {
+                        if ack.ok {
+                            return Ok(());
                         }
+                        bail!("firmware NACK for {}: {}", expected_msg_id, ack.error);
                     }
                 }
-                Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(err) => return Err(anyhow!("serial read failed: {}", err)),
             }
         }
 
@@ -481,22 +672,11 @@ impl Connection {
 }
 
 fn find_default_port() -> Result<String> {
-    let ports = serialport::available_ports().context("failed to enumerate serial ports")?;
+    let ports = discover_ble_devices().context("failed to enumerate BLE devices")?;
     if ports.is_empty() {
-        bail!("no serial ports found");
+        bail!("no BLE devices found");
     }
-
-    for port in &ports {
-        if port.port_name.contains("ttyACM")
-            || port.port_name.contains("ttyUSB")
-            || port.port_name.contains("cu.usbmodem")
-            || port.port_name.contains("cu.wchusbserial")
-        {
-            return Ok(port.port_name.clone());
-        }
-    }
-
-    Ok(ports[0].port_name.clone())
+    Ok(ports[0].clone())
 }
 
 fn app_icon_hint_for(bundle: &str, source_app: &str, category: i32) -> String {
@@ -948,12 +1128,12 @@ where
     after_help = "EXAMPLES:
     landerctl
     landerctl --nogui
-    landerctl --nogui /dev/cu.usbmodemXXXX
+    landerctl --nogui lander001
     landerctl --nogui --simulate whatsapp --from \"Holger\" --text \"Coffee in 5?\"
     landerctl --nogui --simulate whatsapp --from \"Bob\" --text \"Ping!\" --count 5 --interval-ms 800"
 )]
 struct Cli {
-    /// Serial port to use (auto-detected when omitted)
+    /// BLE device id/name to use (auto-detected when omitted)
     port: Option<String>,
 
     /// Run in headless mode (no window)
@@ -996,7 +1176,7 @@ fn run_headless(cli: Cli) -> Result<()> {
         }
 
         let port_name = cli.port.map(Ok).unwrap_or_else(find_default_port)?;
-        println!("Opening serial port: {}", port_name);
+        println!("Opening BLE device: {}", port_name);
         let mut conn = Connection::new(port_name)?;
         let mut next_msg_id = 1_u32;
         send_ping_message(&mut conn, &mut next_msg_id)?;
@@ -1023,7 +1203,7 @@ fn run_headless(cli: Cli) -> Result<()> {
     }
 
     let port_name = cli.port.map(Ok).unwrap_or_else(find_default_port)?;
-    println!("Opening serial port: {}", port_name);
+    println!("Opening BLE device: {}", port_name);
     let mut conn = Connection::new(port_name)?;
     let mut next_msg_id = 1_u32;
     send_ping_message(&mut conn, &mut next_msg_id)?;
@@ -1591,18 +1771,22 @@ impl eframe::App for LanderGui {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("Serial port");
+                        ui.label("BLE device");
                         let old_idx = selected_port_idx;
                         egui::ComboBox::from_id_salt("serial_port_combo")
                             .selected_text(
                                 ports
                                     .get(selected_port_idx)
-                                    .map(String::as_str)
+                                    .map(|name| ble_device_display_name(name))
                                     .unwrap_or("(none)"),
                             )
                             .show_ui(ui, |ui| {
                                 for (idx, name) in ports.iter().enumerate() {
-                                    ui.selectable_value(&mut selected_port_idx, idx, name);
+                                    ui.selectable_value(
+                                        &mut selected_port_idx,
+                                        idx,
+                                        ble_device_display_name(name),
+                                    );
                                 }
                             });
                         if selected_port_idx != old_idx {

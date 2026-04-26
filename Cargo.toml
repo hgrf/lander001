@@ -18,6 +18,7 @@ debug = true    # Symbols are nice, and they don't increase the size on Flash
 opt-level = "z"
 
 [dependencies]
+anyhow = "1.0"
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 # NOTE: only for GPIO20/21 workaround
@@ -30,6 +31,7 @@ embedded-hal-bus = "0.3.0"
 embedded-hal = "1.0.0"
 drive_74hc595 = "0.2.0"
 dummy-pin = "1.0.0"
+enumset = "1.1"
 prost = { version = "0.13", default-features = false, features = ["derive"] }
 crc32fast = "1.4"
 
