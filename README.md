@@ -6,7 +6,7 @@
 
 > 🤖 **Disclaimer:** This project is mostly vibe-coded with [GitHub Copilot](https://github.com/features/copilot). Expect creative architecture decisions, occasional hallucinated APIs, and a general sense that the robot knows more than it lets on.
 
-**lander001** is a small desk robot that reacts to your computer's notifications in real time. It runs on an ESP32-C3 and communicates with a host bridge over USB using a framed protobuf protocol. When a notification arrives — a message, an email, a calendar reminder — the robot lights up its LEDs, swings its servo-controlled antenna, and renders a notification card on its 240×240 TFT display, with app-specific icons and sender details.
+**lander001** is a small desk robot that reacts to your computer's notifications in real time. It runs on an ESP32-C3 and communicates with a host bridge over BLE using a framed protobuf protocol. When a notification arrives — a message, an email, a calendar reminder — the robot lights up its LEDs, swings its servo-controlled antenna, and renders a notification card on its 240×240 TFT display, with app-specific icons and sender details.
 
 The host bridge is a Rust CLI that runs on macOS or Linux and monitors the system notification stream. It translates notifications into protobuf commands and sends them to the robot, then choreographs a follow-up animation sequence entirely from the host side.
 
@@ -46,9 +46,12 @@ ESP32-C3 Super Mini to 74HC595 Shift Register:
 | OE       | GND          | /OE (pin 13) | Output Enable (active low, tie to GND) |
 | SRCLR    | VCC          | /MR (pin 10) | Master Reset (active low, tie to VCC) |
 
-### 📦 Protobuf Transport (USB)
+### 📦 Protobuf Transport (BLE)
 
-Firmware now accepts framed protobuf messages over the ESP32-C3 USB Serial/JTAG interface.
+Firmware now accepts framed protobuf messages over a BLE GATT service with two characteristics:
+
+- RX characteristic (host writes protobuf frame bytes to robot)
+- TX characteristic (robot notifies protobuf frame bytes back to host)
 
 - Schema: `proto/robot.proto`
 - Frame format: `magic(2='RF') + version(1) + payload_len_le(u16) + crc32_le(u32) + protobuf_payload`
@@ -77,10 +80,10 @@ Firmware now sends `Ack` for each non-ack inbound message with:
 
 At the moment, `Ack` means the protobuf frame was decoded and accepted by the firmware transport/command queue. It does not wait for the full LED/display/servo behavior to finish.
 
-Serial channel split:
+Channel split:
 
-- Protobuf control channel: native USB Serial/JTAG device (typically `/dev/cu.usbmodem*`)
-- Runtime logs: UART0 console (typically via a USB-UART bridge, often `/dev/cu.wchusbserial*`)
+- Protobuf control channel: BLE GATT (service + RX/TX characteristics)
+- Runtime logs: UART0 console (typically via a USB-UART bridge)
 
 This separation prevents log bytes from corrupting framed protobuf traffic.
 
@@ -121,10 +124,10 @@ Run headless mode explicitly:
 cargo run -- --nogui
 ```
 
-Optionally pass a serial port explicitly:
+Optionally pass a BLE device id/name explicitly:
 
 ```sh
-cargo run -- --nogui /dev/cu.usbmodemXXXX
+cargo run -- --nogui lander001
 ```
 
 Quick simulation mode (no real incoming notifications needed):
@@ -163,7 +166,7 @@ Current limitation: macOS does not expose full Notification Center contents thro
 
 Current GUI features:
 
-- serial port discovery + connect/disconnect
+- BLE device discovery + connect/disconnect
 - ping with ACK feedback
 - manual servo / LED / icon controls
 - notification simulator with host-controlled follow-up animation

@@ -10,6 +10,8 @@ const FRAME_VERSION: u8 = 1;
 const FRAME_HEADER_LEN: usize = 2 + 1 + 2 + 4;
 const MAX_PAYLOAD_LEN: usize = 4096;
 
+pub const BLE_DEVICE_NAME: &str = "lander001";
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum FrameError {
