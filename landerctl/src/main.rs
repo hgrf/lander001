@@ -64,6 +64,8 @@ const BLUEZ_AGENT_CAPABILITY: &str = "KeyboardDisplay";
 static BLUEZ_AGENT_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 #[cfg(target_os = "linux")]
 static BLUEZ_PAIRING_UI_STATE: OnceLock<(Mutex<BluezPairingState>, Condvar)> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static BLUEZ_UI_CTX: OnceLock<egui::Context> = OnceLock::new();
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
@@ -502,7 +504,7 @@ impl SharedController {
                         self.log(format!("Connect worker stopped: {}", err));
                     }
                 }
-                Err(err) => self.log(format!("Failed to connect: {}", err)),
+                Err(err) => self.log(format!("Failed to connect: {:#}", err)),
             }
         }
     }
@@ -1396,6 +1398,14 @@ fn bluez_pairing_request(
     state.response = None;
     cv.notify_all();
 
+    // Wake the UI so the pairing dialog is visible even if the main window was hidden.
+    if let Some(ctx) = BLUEZ_UI_CTX.get() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if let Some(response) = state.response.take() {
@@ -2264,6 +2274,10 @@ impl LanderGui {
             self.pairing_prompt_seen_id = Some(prompt.id);
             self.pairing_pin_input.clear();
             self.pairing_passkey_input.clear();
+            // Make sure the window is visible and focused for the pairing dialog.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
         egui::Window::new("Bluetooth Pairing")
@@ -3231,6 +3245,8 @@ fn main() -> Result<()> {
         native_options,
         Box::new(|cc| {
             LanderGui::install_fonts_and_text_style(&cc.egui_ctx);
+            #[cfg(target_os = "linux")]
+            let _ = BLUEZ_UI_CTX.set(cc.egui_ctx.clone());
             let mut app = LanderGui {
                 app_icon_texture: LanderGui::load_app_icon_texture(&cc.egui_ctx),
                 ..Default::default()
