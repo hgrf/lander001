@@ -7,6 +7,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Condvar;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -22,6 +26,14 @@ use futures_util::StreamExt;
 #[cfg(target_os = "macos")]
 use serde_json::Value;
 use uuid::Uuid;
+#[cfg(target_os = "linux")]
+use zbus::blocking::{Connection as ZbusConnection, Proxy as ZbusProxy};
+#[cfg(target_os = "linux")]
+use zbus::fdo::Error as ZbusFdoError;
+#[cfg(target_os = "linux")]
+use zbus::interface;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 #[path = "../../shared/protocol.rs"]
 mod protocol;
@@ -43,6 +55,46 @@ const BLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BLE_DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
 const BLE_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 const BLE_NOTIFICATIONS_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "linux")]
+const BLUEZ_AGENT_PATH: &str = "/io/github/lander001/landerctl/agent";
+#[cfg(target_os = "linux")]
+const BLUEZ_AGENT_CAPABILITY: &str = "KeyboardDisplay";
+
+#[cfg(target_os = "linux")]
+static BLUEZ_AGENT_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static BLUEZ_PAIRING_UI_STATE: OnceLock<(Mutex<BluezPairingState>, Condvar)> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+enum BluezPairingPromptKind {
+    PinCode,
+    Passkey,
+    Confirmation { passkey: u32 },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct BluezPairingPrompt {
+    id: u64,
+    device: String,
+    kind: BluezPairingPromptKind,
+}
+
+#[cfg(target_os = "linux")]
+enum BluezPairingResponse {
+    PinCode(String),
+    Passkey(u32),
+    Confirmation(bool),
+    Cancelled,
+}
+
+#[cfg(target_os = "linux")]
+struct BluezPairingState {
+    pending: Option<BluezPairingPrompt>,
+    response: Option<BluezPairingResponse>,
+    next_id: u64,
+}
 
 fn ble_service_uuid() -> Result<Uuid> {
     Uuid::parse_str(BLE_SERVICE_UUID)
@@ -1039,6 +1091,14 @@ impl Connection {
             let peripheral =
                 selected.ok_or_else(|| anyhow!("BLE device '{}' not found", selected_id))?;
 
+            #[cfg(target_os = "linux")]
+            {
+                Self::check_connect_cancelled(cancel_flag)?;
+                on_progress("Pairing via BlueZ...");
+                ensure_bluez_paired_and_trusted(&peripheral)
+                    .context("failed to pair/trust device via BlueZ")?;
+            }
+
             Self::check_connect_cancelled(cancel_flag)?;
             on_progress("Opening BLE link...");
             tokio::time::timeout(BLE_CONNECT_TIMEOUT, peripheral.connect())
@@ -1268,6 +1328,339 @@ fn map_category(app: &str) -> i32 {
     } else {
         pb::Category::System as i32
     }
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_pairing_ui_state() -> &'static (Mutex<BluezPairingState>, Condvar) {
+    BLUEZ_PAIRING_UI_STATE.get_or_init(|| {
+        (
+            Mutex::new(BluezPairingState {
+                pending: None,
+                response: None,
+                next_id: 1,
+            }),
+            Condvar::new(),
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn to_bluez_rejected(err: impl Into<String>) -> ZbusFdoError {
+    ZbusFdoError::Failed(err.into())
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_pairing_current_prompt() -> Option<BluezPairingPrompt> {
+    let (lock, _) = bluez_pairing_ui_state();
+    lock.lock().ok()?.pending.clone()
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_pairing_submit_response(response: BluezPairingResponse) -> Result<()> {
+    let (lock, cv) = bluez_pairing_ui_state();
+    let mut state = lock.lock().map_err(|_| anyhow!("pairing state poisoned"))?;
+    if state.pending.is_none() {
+        bail!("no pending BlueZ pairing prompt");
+    }
+    state.response = Some(response);
+    cv.notify_all();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_pairing_cancel_pending() {
+    let _ = bluez_pairing_submit_response(BluezPairingResponse::Cancelled);
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_pairing_request(
+    device: OwnedObjectPath,
+    kind: BluezPairingPromptKind,
+) -> Result<BluezPairingResponse> {
+    let (lock, cv) = bluez_pairing_ui_state();
+    let mut state = lock.lock().map_err(|_| anyhow!("pairing state poisoned"))?;
+
+    while state.pending.is_some() {
+        state = cv
+            .wait(state)
+            .map_err(|_| anyhow!("pairing state poisoned"))?;
+    }
+
+    let prompt = BluezPairingPrompt {
+        id: state.next_id,
+        device: device.to_string(),
+        kind,
+    };
+    state.next_id = state.next_id.saturating_add(1);
+    state.pending = Some(prompt);
+    state.response = None;
+    cv.notify_all();
+
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(response) = state.response.take() {
+            state.pending = None;
+            cv.notify_all();
+            return Ok(response);
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            state.pending = None;
+            cv.notify_all();
+            bail!("pairing input timed out");
+        }
+
+        let wait_for = deadline.saturating_duration_since(now);
+        let (next_state, _timeout) = cv
+            .wait_timeout(state, wait_for)
+            .map_err(|_| anyhow!("pairing state poisoned"))?;
+        state = next_state;
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct BluezAgent;
+
+#[cfg(target_os = "linux")]
+#[interface(name = "org.bluez.Agent1")]
+impl BluezAgent {
+    fn release(&self) {}
+
+    fn request_pin_code(
+        &self,
+        device: OwnedObjectPath,
+    ) -> std::result::Result<String, ZbusFdoError> {
+        match bluez_pairing_request(device, BluezPairingPromptKind::PinCode)
+            .map_err(|err| to_bluez_rejected(err.to_string()))?
+        {
+            BluezPairingResponse::PinCode(pin) if !pin.is_empty() => Ok(pin),
+            _ => Err(to_bluez_rejected("pairing PIN rejected".to_string())),
+        }
+    }
+
+    fn display_pin_code(&self, device: OwnedObjectPath, pincode: &str) {
+        eprintln!("BlueZ pairing PIN for {}: {}", device, pincode);
+    }
+
+    fn request_passkey(&self, device: OwnedObjectPath) -> std::result::Result<u32, ZbusFdoError> {
+        match bluez_pairing_request(device, BluezPairingPromptKind::Passkey)
+            .map_err(|err| to_bluez_rejected(err.to_string()))?
+        {
+            BluezPairingResponse::Passkey(passkey) => Ok(passkey),
+            _ => Err(to_bluez_rejected("pairing passkey rejected".to_string())),
+        }
+    }
+
+    fn display_passkey(&self, device: OwnedObjectPath, passkey: u32, entered: u16) {
+        eprintln!(
+            "BlueZ passkey for {}: {:06} (entered {})",
+            device, passkey, entered
+        );
+    }
+
+    fn request_confirmation(
+        &self,
+        device: OwnedObjectPath,
+        passkey: u32,
+    ) -> std::result::Result<(), ZbusFdoError> {
+        match bluez_pairing_request(device, BluezPairingPromptKind::Confirmation { passkey })
+            .map_err(|err| to_bluez_rejected(err.to_string()))?
+        {
+            BluezPairingResponse::Confirmation(true) => Ok(()),
+            _ => Err(to_bluez_rejected(
+                "pairing confirmation rejected".to_string(),
+            )),
+        }
+    }
+
+    fn request_authorization(
+        &self,
+        _device: OwnedObjectPath,
+    ) -> std::result::Result<(), ZbusFdoError> {
+        Ok(())
+    }
+
+    fn authorize_service(
+        &self,
+        _device: OwnedObjectPath,
+        _uuid: &str,
+    ) -> std::result::Result<(), ZbusFdoError> {
+        Ok(())
+    }
+
+    fn cancel(&self) {
+        bluez_pairing_cancel_pending();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn start_bluez_pairing_agent() -> Result<()> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);
+
+    std::thread::spawn(move || {
+        let conn = match ZbusConnection::system() {
+            Ok(c) => c,
+            Err(err) => {
+                let _ = ready_tx.send(Err(format!("failed to connect to system D-Bus: {}", err)));
+                return;
+            }
+        };
+
+        if let Err(err) = conn.object_server().at(BLUEZ_AGENT_PATH, BluezAgent) {
+            let _ = ready_tx.send(Err(format!("failed to export BlueZ agent object: {}", err)));
+            return;
+        }
+
+        let manager =
+            match ZbusProxy::new(&conn, "org.bluez", "/org/bluez", "org.bluez.AgentManager1") {
+                Ok(p) => p,
+                Err(err) => {
+                    let _ = ready_tx.send(Err(format!(
+                        "failed to create BlueZ AgentManager proxy: {}",
+                        err
+                    )));
+                    return;
+                }
+            };
+
+        if let Err(err) =
+            manager.call::<()>("RegisterAgent", &(BLUEZ_AGENT_PATH, BLUEZ_AGENT_CAPABILITY))
+        {
+            let _ = ready_tx.send(Err(format!("failed to register BlueZ agent: {}", err)));
+            return;
+        }
+
+        // Some systems require policy to set default agent; ignore failures and keep our app-local agent.
+        let _ = manager.call::<()>("RequestDefaultAgent", &(BLUEZ_AGENT_PATH,));
+
+        let _ = ready_tx.send(Ok(()));
+
+        loop {
+            if let Err(err) = conn.object_server().try_handle_next() {
+                eprintln!("bluez agent loop error: {}", err);
+                break;
+            }
+        }
+    });
+
+    match ready_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(err)) => bail!(err),
+        Err(_) => bail!("timed out starting BlueZ pairing agent"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_bluez_pairing_agent() -> Result<()> {
+    let init =
+        BLUEZ_AGENT_INIT.get_or_init(|| start_bluez_pairing_agent().map_err(|e| e.to_string()));
+    match init {
+        Ok(()) => Ok(()),
+        Err(err) => bail!("BlueZ pairing agent unavailable: {}", err),
+    }
+}
+
+#[cfg(target_os = "linux")]
+type BluezInterfaceMap =
+    std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>;
+
+#[cfg(target_os = "linux")]
+type BluezManagedObjects = std::collections::HashMap<OwnedObjectPath, BluezInterfaceMap>;
+
+#[cfg(target_os = "linux")]
+fn bluez_device_path_for_address(conn: &ZbusConnection, address: &str) -> Result<String> {
+    let object_manager =
+        ZbusProxy::new(conn, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager")
+            .context("failed to create BlueZ object manager proxy")?;
+
+    let objects: BluezManagedObjects = object_manager
+        .call("GetManagedObjects", &())
+        .context("failed to query BlueZ managed objects")?;
+
+    for (path, interfaces) in objects {
+        let Some(device_props) = interfaces.get("org.bluez.Device1") else {
+            continue;
+        };
+        let Some(raw_addr) = device_props.get("Address") else {
+            continue;
+        };
+
+        let dev_addr: String = raw_addr
+            .clone()
+            .try_into()
+            .context("failed to decode BlueZ device address")?;
+
+        if dev_addr.eq_ignore_ascii_case(address) {
+            return Ok(path.to_string());
+        }
+    }
+
+    bail!("BlueZ device {} not found", address)
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_get_device_bool(conn: &ZbusConnection, device_path: &str, property: &str) -> Result<bool> {
+    let props = ZbusProxy::new(
+        conn,
+        "org.bluez",
+        device_path,
+        "org.freedesktop.DBus.Properties",
+    )
+    .context("failed to create BlueZ properties proxy")?;
+
+    let value: OwnedValue = props
+        .call("Get", &("org.bluez.Device1", property))
+        .with_context(|| format!("failed to read BlueZ Device1.{}", property))?;
+
+    value
+        .try_into()
+        .with_context(|| format!("failed to decode BlueZ Device1.{}", property))
+}
+
+#[cfg(target_os = "linux")]
+fn bluez_set_device_bool(
+    conn: &ZbusConnection,
+    device_path: &str,
+    property: &str,
+    value: bool,
+) -> Result<()> {
+    let props = ZbusProxy::new(
+        conn,
+        "org.bluez",
+        device_path,
+        "org.freedesktop.DBus.Properties",
+    )
+    .context("failed to create BlueZ properties proxy")?;
+
+    props
+        .call::<()>(
+            "Set",
+            &("org.bluez.Device1", property, OwnedValue::from(value)),
+        )
+        .with_context(|| format!("failed to set BlueZ Device1.{}", property))
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_bluez_paired_and_trusted(peripheral: &Peripheral) -> Result<()> {
+    let address = peripheral.address().to_string();
+    let conn = ZbusConnection::system().context("failed to connect to system D-Bus")?;
+    let device_path = bluez_device_path_for_address(&conn, &address)?;
+
+    let already_paired = bluez_get_device_bool(&conn, &device_path, "Paired").unwrap_or(false);
+    if !already_paired {
+        ensure_bluez_pairing_agent().context("failed to start BlueZ pairing agent")?;
+        let device = ZbusProxy::new(&conn, "org.bluez", &device_path, "org.bluez.Device1")
+            .context("failed to create BlueZ device proxy")?;
+        device
+            .call::<()>("Pair", &())
+            .with_context(|| format!("BlueZ pairing failed for {}", address))?;
+    }
+
+    bluez_set_device_bool(&conn, &device_path, "Trusted", true)
+        .with_context(|| format!("failed to mark {} as trusted", address))?;
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1738,6 +2131,13 @@ struct LanderGui {
     last_tray_connected: Option<String>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     monitor_started: bool,
+
+    #[cfg(target_os = "linux")]
+    pairing_prompt_seen_id: Option<u64>,
+    #[cfg(target_os = "linux")]
+    pairing_pin_input: String,
+    #[cfg(target_os = "linux")]
+    pairing_passkey_input: String,
 }
 
 impl Default for LanderGui {
@@ -1766,6 +2166,13 @@ impl Default for LanderGui {
             last_tray_connected: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             monitor_started: false,
+
+            #[cfg(target_os = "linux")]
+            pairing_prompt_seen_id: None,
+            #[cfg(target_os = "linux")]
+            pairing_pin_input: String::new(),
+            #[cfg(target_os = "linux")]
+            pairing_passkey_input: String::new(),
         }
     }
 }
@@ -1842,6 +2249,105 @@ impl LanderGui {
         let size = [img.width() as usize, img.height() as usize];
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
         Some(ctx.load_texture("lander_icon", color_image, egui::TextureOptions::LINEAR))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn render_bluez_pairing_modal(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = bluez_pairing_current_prompt() else {
+            self.pairing_prompt_seen_id = None;
+            return;
+        };
+
+        if self.pairing_prompt_seen_id != Some(prompt.id) {
+            self.pairing_prompt_seen_id = Some(prompt.id);
+            self.pairing_pin_input.clear();
+            self.pairing_passkey_input.clear();
+        }
+
+        egui::Window::new("Bluetooth Pairing")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("landerctl needs pairing input for BlueZ.");
+                ui.label(format!("Device: {}", prompt.device));
+                ui.add_space(6.0);
+
+                match prompt.kind {
+                    BluezPairingPromptKind::PinCode => {
+                        ui.label("Enter PIN code");
+                        ui.text_edit_singleline(&mut self.pairing_pin_input);
+                        let pin_trimmed = self.pairing_pin_input.trim();
+                        let pin_valid = !pin_trimmed.is_empty();
+                        if !pin_valid {
+                            ui.colored_label(egui::Color32::YELLOW, "PIN cannot be empty");
+                        }
+
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(pin_valid, egui::Button::new("Submit"))
+                                .clicked()
+                            {
+                                let result = bluez_pairing_submit_response(
+                                    BluezPairingResponse::PinCode(pin_trimmed.to_string()),
+                                );
+                                if let Err(err) = result {
+                                    if let Ok(mut ctrl) = self.controller.lock() {
+                                        ctrl.log(format!("BlueZ pairing input failed: {}", err));
+                                    }
+                                }
+                            }
+                            if ui.button("Reject").clicked() {
+                                let _ =
+                                    bluez_pairing_submit_response(BluezPairingResponse::Cancelled);
+                            }
+                        });
+                    }
+                    BluezPairingPromptKind::Passkey => {
+                        ui.label("Enter numeric passkey");
+                        ui.text_edit_singleline(&mut self.pairing_passkey_input);
+                        let passkey_parse = self.pairing_passkey_input.trim().parse::<u32>();
+                        let passkey_valid = passkey_parse.is_ok();
+                        if !self.pairing_passkey_input.trim().is_empty() && !passkey_valid {
+                            ui.colored_label(egui::Color32::YELLOW, "Passkey must be numeric");
+                        }
+
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(passkey_valid, egui::Button::new("Submit"))
+                                .clicked()
+                            {
+                                if let Ok(passkey) = passkey_parse {
+                                    let _ = bluez_pairing_submit_response(
+                                        BluezPairingResponse::Passkey(passkey),
+                                    );
+                                }
+                            }
+                            if ui.button("Reject").clicked() {
+                                let _ =
+                                    bluez_pairing_submit_response(BluezPairingResponse::Cancelled);
+                            }
+                        });
+                    }
+                    BluezPairingPromptKind::Confirmation { passkey } => {
+                        ui.label(format!("Confirm passkey {:06}", passkey));
+                        ui.horizontal(|ui| {
+                            if ui.button("Confirm").clicked() {
+                                let _ = bluez_pairing_submit_response(
+                                    BluezPairingResponse::Confirmation(true),
+                                );
+                            }
+                            if ui.button("Reject").clicked() {
+                                let _ = bluez_pairing_submit_response(
+                                    BluezPairingResponse::Confirmation(false),
+                                );
+                            }
+                        });
+                    }
+                }
+            });
+
+        ctx.request_repaint_after(Duration::from_millis(50));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2079,6 +2585,9 @@ impl eframe::App for LanderGui {
             });
             self.monitor_started = true;
         }
+
+        #[cfg(target_os = "linux")]
+        self.render_bluez_pairing_modal(ctx);
 
         {
             let mut controller = self.controller.lock().unwrap();
