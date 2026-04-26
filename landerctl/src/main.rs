@@ -33,7 +33,7 @@ use zbus::fdo::Error as ZbusFdoError;
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value as ZvariantValue};
 
 #[path = "../../shared/protocol.rs"]
 mod protocol;
@@ -1525,23 +1525,20 @@ fn start_bluez_pairing_agent() -> Result<()> {
             };
 
         if let Err(err) =
-            manager.call::<()>("RegisterAgent", &(BLUEZ_AGENT_PATH, BLUEZ_AGENT_CAPABILITY))
+            manager.call::<_, _, ()>("RegisterAgent", &(BLUEZ_AGENT_PATH, BLUEZ_AGENT_CAPABILITY))
         {
             let _ = ready_tx.send(Err(format!("failed to register BlueZ agent: {}", err)));
             return;
         }
 
         // Some systems require policy to set default agent; ignore failures and keep our app-local agent.
-        let _ = manager.call::<()>("RequestDefaultAgent", &(BLUEZ_AGENT_PATH,));
+        let _ = manager.call::<_, _, ()>("RequestDefaultAgent", &(BLUEZ_AGENT_PATH,));
 
         let _ = ready_tx.send(Ok(()));
 
-        loop {
-            if let Err(err) = conn.object_server().try_handle_next() {
-                eprintln!("bluez agent loop error: {}", err);
-                break;
-            }
-        }
+        // Keep the connection (and its executor) alive so the object server keeps serving requests.
+        let (_keepalive, never_rx) = std::sync::mpsc::channel::<()>();
+        let _ = never_rx.recv();
     });
 
     match ready_rx.recv_timeout(Duration::from_secs(3)) {
@@ -1586,9 +1583,8 @@ fn bluez_device_path_for_address(conn: &ZbusConnection, address: &str) -> Result
             continue;
         };
 
-        let dev_addr: String = raw_addr
-            .clone()
-            .try_into()
+        let dev_addr: String = ZvariantValue::try_from(raw_addr)
+            .and_then(|v| String::try_from(&v))
             .context("failed to decode BlueZ device address")?;
 
         if dev_addr.eq_ignore_ascii_case(address) {
@@ -1634,7 +1630,7 @@ fn bluez_set_device_bool(
     .context("failed to create BlueZ properties proxy")?;
 
     props
-        .call::<()>(
+        .call::<_, _, ()>(
             "Set",
             &("org.bluez.Device1", property, OwnedValue::from(value)),
         )
@@ -1650,10 +1646,15 @@ fn ensure_bluez_paired_and_trusted(peripheral: &Peripheral) -> Result<()> {
     let already_paired = bluez_get_device_bool(&conn, &device_path, "Paired").unwrap_or(false);
     if !already_paired {
         ensure_bluez_pairing_agent().context("failed to start BlueZ pairing agent")?;
-        let device = ZbusProxy::new(&conn, "org.bluez", &device_path, "org.bluez.Device1")
-            .context("failed to create BlueZ device proxy")?;
+        let device = ZbusProxy::new(
+            &conn,
+            "org.bluez",
+            device_path.as_str(),
+            "org.bluez.Device1",
+        )
+        .context("failed to create BlueZ device proxy")?;
         device
-            .call::<()>("Pair", &())
+            .call::<_, _, ()>("Pair", &())
             .with_context(|| format!("BlueZ pairing failed for {}", address))?;
     }
 
