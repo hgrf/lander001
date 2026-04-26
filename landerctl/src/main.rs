@@ -1537,8 +1537,9 @@ fn start_bluez_pairing_agent() -> Result<()> {
         let _ = ready_tx.send(Ok(()));
 
         // Keep the connection (and its executor) alive so the object server keeps serving requests.
-        let (_keepalive, never_rx) = std::sync::mpsc::channel::<()>();
+        let (keepalive_tx, never_rx) = std::sync::mpsc::channel::<()>();
         let _ = never_rx.recv();
+        drop(keepalive_tx);
     });
 
     match ready_rx.recv_timeout(Duration::from_secs(3)) {
