@@ -60,6 +60,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check formatting of firmware crate
+        run: cargo fmt --manifest-path fw/Cargo.toml --check
+
       - name: Check formattting of host GUI crate
         run: cargo fmt --manifest-path landerctl/Cargo.toml --check
 
@@ -329,7 +332,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lander001-firmware
-          path: target/riscv32imc-esp-espidf/release/lander001
+          path: fw/target/riscv32imc-esp-espidf/release/lander001
           if-no-files-found: error
 
   release:

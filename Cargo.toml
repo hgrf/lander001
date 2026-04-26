@@ -1,20 +1,6 @@
 [workspace]
-members = ["fw", "landerctl"]
-default-members = ["landerctl"]
+members = ["landerctl"]
 resolver = "2"
 
-[profile.dev]
-debug = true
-
-[profile.dev.package.lander001]
-opt-level = "z"
-
-[profile.release.package.lander001]
-opt-level = "s"
-
 [patch.crates-io]
-# Fixes firmware panic on disconnect with HCI reason codes not in GattConnReason enum
-# (e.g. reason 5 = Auth Failure from Linux). Upstream issue: .try_into().unwrap() in
-# esp-idf-svc 0.52.1 src/bt/ble/gatt/server.rs:367 and client.rs:841.
-esp-idf-svc = { path = "vendor/esp-idf-svc" }
 tray-item = { path = "vendor/tray-item" }
