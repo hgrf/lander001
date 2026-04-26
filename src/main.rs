@@ -1656,11 +1656,8 @@ fn main() {
             const MAX_MS: u64 = 5000;
             MIN_MS + (unsafe { esp_random() as u64 } % (MAX_MS - MIN_MS + 1))
         };
-        let slides: [(&ImageRawLE<Rgb565>, u64); 3] = [
-            (&cat, cat1_delay_ms),
-            (&cat2, 100),
-            (&cat3, 100),
-        ];
+        let slides: [(&ImageRawLE<Rgb565>, u64); 3] =
+            [(&cat, cat1_delay_ms), (&cat2, 100), (&cat3, 100)];
 
         for (img, delay_ms) in slides.iter() {
             drain_commands(
