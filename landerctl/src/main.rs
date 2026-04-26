@@ -39,6 +39,10 @@ const BLE_SCAN_STATUS: &str = "Scanning for BLE devices...";
 const BLE_WRITE_TIMEOUT: Duration = Duration::from_millis(700);
 const BLE_ACK_TIMEOUT: Duration = Duration::from_millis(900);
 const BLE_DISCONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
+const BLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const BLE_DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
+const BLE_SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
+const BLE_NOTIFICATIONS_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn ble_service_uuid() -> Result<Uuid> {
     Uuid::parse_str(BLE_SERVICE_UUID)
@@ -1012,16 +1016,16 @@ impl Connection {
 
             Self::check_connect_cancelled(cancel_flag)?;
             on_progress("Opening BLE link...");
-            peripheral
-                .connect()
+            tokio::time::timeout(BLE_CONNECT_TIMEOUT, peripheral.connect())
                 .await
+                .context("timed out connecting to BLE peripheral")?
                 .context("failed to connect BLE peripheral")?;
             Self::check_connect_cancelled(cancel_flag)?;
 
             on_progress("Discovering BLE services...");
-            peripheral
-                .discover_services()
+            tokio::time::timeout(BLE_DISCOVER_TIMEOUT, peripheral.discover_services())
                 .await
+                .context("timed out discovering BLE services")?
                 .context("failed to discover BLE services")?;
 
             let chars = peripheral.characteristics();
@@ -1038,17 +1042,20 @@ impl Connection {
 
             Self::check_connect_cancelled(cancel_flag)?;
             on_progress("Subscribing to notifications...");
-            peripheral
-                .subscribe(&tx_char)
+            tokio::time::timeout(BLE_SUBSCRIBE_TIMEOUT, peripheral.subscribe(&tx_char))
                 .await
+                .context("timed out subscribing to BLE TX characteristic")?
                 .context("failed to subscribe BLE TX characteristic")?;
 
             Self::check_connect_cancelled(cancel_flag)?;
             on_progress("Waiting for robot responses...");
-            let mut notifications = peripheral
-                .notifications()
-                .await
-                .context("failed to open BLE notification stream")?;
+            let mut notifications = tokio::time::timeout(
+                BLE_NOTIFICATIONS_TIMEOUT,
+                peripheral.notifications(),
+            )
+            .await
+            .context("timed out opening BLE notification stream")?
+            .context("failed to open BLE notification stream")?;
             let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(64);
 
             tokio::spawn(async move {
