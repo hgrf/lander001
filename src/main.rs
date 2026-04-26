@@ -1589,12 +1589,11 @@ fn main() {
         240,
     );
 
-    let images = [&cat, &cat2, &cat3];
     let mut notification_hold_until: Option<std::time::Instant> = None;
     let mut led_animator = LedAnimator::new();
     let mut pairing_button_state = PairingButtonState::new();
     let mut rendered_pairing_code: Option<u32> = None;
-    log::info!("cycling cat1/cat2/cat3 with random interval (100..=1000 ms)");
+    log::info!("cycling cat1/cat2/cat3 with random interval");
 
     loop {
         poll_pairing_button_and_maybe_start(
@@ -1652,20 +1651,15 @@ fn main() {
             notification_hold_until = None;
         }
 
-        drain_commands(
-            &cmd_rx,
-            &mut servo,
-            &mut drive,
-            &mut led_animator,
-            &mut display,
-            &cat,
-            &cat2,
-            &cat3,
-            &mut notification_hold_until,
-        );
-        led_animator.tick(&mut drive, std::time::Instant::now());
+        let cat1_delay_ms: u64 = {
+            const MIN_MS: u64 = 1000;
+            const MAX_MS: u64 = 5000;
+            MIN_MS + (unsafe { esp_random() as u64 } % (MAX_MS - MIN_MS + 1))
+        };
+        let slides: [(&ImageRawLE<Rgb565>, u64); 3] =
+            [(&cat, cat1_delay_ms), (&cat2, 100), (&cat3, 100)];
 
-        for img in images.iter() {
+        for (img, delay_ms) in slides.iter() {
             drain_commands(
                 &cmd_rx,
                 &mut servo,
@@ -1688,7 +1682,7 @@ fn main() {
             Image::new(*img, Point::zero()).draw(&mut display).unwrap();
 
             sleep_with_command_pump(
-                std::time::Duration::from_millis(300),
+                std::time::Duration::from_millis(*delay_ms),
                 &cmd_rx,
                 &mut servo,
                 &mut drive,
