@@ -1,5 +1,5 @@
 diff --git a/src/bt/ble/gatt/server.rs b/src/bt/ble/gatt/server.rs
-index 6ecf7ef..0000001 100644
+index 6ecf7ef2257029390a2600f8e49b04c66d7975fb..afe95a9 100644
 --- a/src/bt/ble/gatt/server.rs
 +++ b/src/bt/ble/gatt/server.rs
 @@ -364,7 +364,7 @@ use super::{
@@ -13,7 +13,7 @@ index 6ecf7ef..0000001 100644
              },
              esp_gatts_cb_event_t_ESP_GATTS_OPEN_EVT => unsafe {
 diff --git a/src/bt/ble/gatt/client.rs b/src/bt/ble/gatt/client.rs
-index 4cb3282..0000002 100644
+index 4cb32824f3296f59eee321c353f04b73931b45ac..afe95a9 100644
 --- a/src/bt/ble/gatt/client.rs
 +++ b/src/bt/ble/gatt/client.rs
 @@ -717,7 +717,7 @@ use super::{GattConnParams, GattConnReason, GattInterface, GattStatus, Handle};

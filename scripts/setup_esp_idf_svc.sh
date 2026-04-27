@@ -19,6 +19,7 @@ else
 fi
 
 git -C "$target_dir" checkout --detach "$upstream_ref"
+git -C "$target_dir" reset --hard "$upstream_ref"
 
 if git -C "$target_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
   echo "[esp-idf-svc] Patch already applied"
