@@ -2875,32 +2875,52 @@ impl eframe::App for LanderGui {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if scanning {
                         ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(
+                        let elapsed = scan_started_at
+                            .map(|started| started.elapsed().as_secs_f32())
+                            .unwrap_or_default();
+                        ui.label(format!(
+                            "{} ({:.1}s)",
                             scan_status
                                 .clone()
-                                .unwrap_or_else(|| "scanning".to_string()),
-                        );
+                                .unwrap_or_else(|| BLE_SCAN_STATUS.to_string()),
+                            elapsed
+                        ));
                     } else if connecting {
                         ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(
+                        let elapsed = connect_started_at
+                            .map(|started| started.elapsed().as_secs_f32())
+                            .unwrap_or_default();
+                        ui.label(format!(
+                            "{} ({:.1}s)",
                             connect_status
                                 .clone()
-                                .unwrap_or_else(|| "connecting".to_string()),
-                        );
+                                .unwrap_or_else(|| "Connecting via BLE...".to_string()),
+                            elapsed
+                        ));
                     } else if disconnecting {
                         ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(
+                        let elapsed = disconnect_started_at
+                            .map(|started| started.elapsed().as_secs_f32())
+                            .unwrap_or_default();
+                        ui.label(format!(
+                            "{} ({:.1}s)",
                             disconnect_status
                                 .clone()
-                                .unwrap_or_else(|| "disconnecting".to_string()),
-                        );
+                                .unwrap_or_else(|| "Disconnecting via BLE...".to_string()),
+                            elapsed
+                        ));
                     } else if command_pending {
                         ui.add(egui::Spinner::new().size(14.0));
-                        ui.label(
+                        let elapsed = command_started_at
+                            .map(|started| started.elapsed().as_secs_f32())
+                            .unwrap_or_default();
+                        ui.label(format!(
+                            "{} ({:.1}s)",
                             command_status
                                 .clone()
-                                .unwrap_or_else(|| "working".to_string()),
-                        );
+                                .unwrap_or_else(|| "Waiting for BLE response...".to_string()),
+                            elapsed
+                        ));
                     } else if let Some(ref port_name) = conn_port_name {
                         ui.label(format!("connected: {}", port_name));
                         ui.colored_label(egui::Color32::from_rgb(40, 220, 120), "●");
@@ -2955,68 +2975,6 @@ impl eframe::App for LanderGui {
                             self.controller.lock().unwrap().disconnect();
                         }
                     });
-
-                    if scanning {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(16.0));
-                            let elapsed = scan_started_at
-                                .map(|started| started.elapsed().as_secs_f32())
-                                .unwrap_or_default();
-                            ui.label(format!(
-                                "{} ({:.1}s)",
-                                scan_status
-                                    .clone()
-                                    .unwrap_or_else(|| BLE_SCAN_STATUS.to_string()),
-                                elapsed
-                            ));
-                        });
-                    } else if connecting {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(16.0));
-                            let elapsed = connect_started_at
-                                .map(|started| started.elapsed().as_secs_f32())
-                                .unwrap_or_default();
-                            ui.label(format!(
-                                "{} ({:.1}s)",
-                                connect_status
-                                    .clone()
-                                    .unwrap_or_else(|| "Connecting via BLE...".to_string()),
-                                elapsed
-                            ));
-                        });
-                    } else if disconnecting {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(16.0));
-                            let elapsed = disconnect_started_at
-                                .map(|started| started.elapsed().as_secs_f32())
-                                .unwrap_or_default();
-                            ui.label(format!(
-                                "{} ({:.1}s)",
-                                disconnect_status
-                                    .clone()
-                                    .unwrap_or_else(|| "Disconnecting via BLE...".to_string()),
-                                elapsed
-                            ));
-                        });
-                    } else if command_pending {
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(16.0));
-                            let elapsed = command_started_at
-                                .map(|started| started.elapsed().as_secs_f32())
-                                .unwrap_or_default();
-                            ui.label(format!(
-                                "{} ({:.1}s)",
-                                command_status
-                                    .clone()
-                                    .unwrap_or_else(|| "Waiting for BLE response...".to_string()),
-                                elapsed
-                            ));
-                        });
-                    }
 
                     ui.horizontal(|ui| {
                         ui.label("BLE device");
