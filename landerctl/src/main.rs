@@ -2631,9 +2631,10 @@ impl eframe::App for LanderGui {
         // ── Keyboard shortcut handling ──────────────────────────────────────
         // Read all key-presses in a single borrow, then act on them so that
         // we avoid holding the `input()` borrow while calling `&mut self`.
-        let (key_c, key_d, key_p, key_up, key_down, key_s, key_1, key_2, key_3, key_4, key_n) = ctx
+        let (key_b, key_c, key_d, key_p, key_up, key_down, key_s, key_1, key_2, key_3, key_4, key_n) = ctx
             .input(|i| {
                 (
+                    i.key_pressed(egui::Key::B),
                     i.key_pressed(egui::Key::C),
                     i.key_pressed(egui::Key::D),
                     i.key_pressed(egui::Key::P),
@@ -2664,6 +2665,9 @@ impl eframe::App for LanderGui {
                 )
             };
 
+            if key_b && !scanning && !connecting && !disconnecting && !command_pending {
+                self.controller.lock().unwrap().scan_ports();
+            }
             if key_c && !connected && !connecting && !scanning && !disconnecting {
                 self.controller.lock().unwrap().connect();
             }
@@ -2938,26 +2942,21 @@ impl eframe::App for LanderGui {
 
                         if scanning {
                             ui.add_enabled(false, egui::Button::new("Connect"));
-                            Self::shortcut_hint(ui, &["..."]);
                         } else if connecting {
                             if ui.button("Cancel").clicked() {
                                 self.controller.lock().unwrap().disconnect();
                             }
-                            Self::shortcut_hint(ui, &["D"]);
                         } else if !connected {
                             if ui.button("Connect").clicked() {
                                 self.controller.lock().unwrap().connect();
                             }
-                            Self::shortcut_hint(ui, &["C"]);
                         } else if disconnecting {
                             ui.add_enabled(false, egui::Button::new("Disconnecting..."));
-                            Self::shortcut_hint(ui, &["..."]);
                         } else if ui
                             .add_enabled(!command_pending, egui::Button::new("Disconnect"))
                             .clicked()
                         {
                             self.controller.lock().unwrap().disconnect();
-                            Self::shortcut_hint(ui, &["D"]);
                         }
                     });
 
@@ -3057,7 +3056,6 @@ impl eframe::App for LanderGui {
                             if ui.button("Ping").clicked() {
                                 self.controller.lock().unwrap().send_ping();
                             }
-                            Self::shortcut_hint(ui, &["P"]);
                         });
                     });
                 });
@@ -3082,7 +3080,6 @@ impl eframe::App for LanderGui {
                             if ui.button("Send").clicked() {
                                 self.controller.lock().unwrap().send_servo(self.servo_angle);
                             }
-                            Self::shortcut_hint(ui, &["S"]);
                         });
 
                         ui.horizontal(|ui| {
@@ -3096,7 +3093,6 @@ impl eframe::App for LanderGui {
                                     .unwrap()
                                     .send_led(self.led_pattern, self.led_repeats);
                             }
-                            Self::shortcut_hint(ui, &["1", "2", "3", "4"]);
                         });
 
                         ui.horizontal(|ui| {
@@ -3151,7 +3147,6 @@ impl eframe::App for LanderGui {
                                     .unwrap()
                                     .send_notification_and_animation(&p, &f, &t);
                             }
-                            Self::shortcut_hint(ui, &["N"]);
                         });
                     });
                 });
@@ -3171,6 +3166,10 @@ impl eframe::App for LanderGui {
                         .num_columns(2)
                         .spacing([16.0, 4.0])
                         .show(ui, |ui| {
+                            Self::shortcut_hint(ui, &["B"]);
+                            ui.label("BLE scan");
+                            ui.end_row();
+
                             Self::shortcut_hint(ui, &["C"]);
                             ui.label("Connect");
                             ui.end_row();
