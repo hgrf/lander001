@@ -2631,16 +2631,15 @@ impl eframe::App for LanderGui {
         // ── Keyboard shortcut handling ──────────────────────────────────────
         // Read all key-presses in a single borrow, then act on them so that
         // we avoid holding the `input()` borrow while calling `&mut self`.
-        let (key_b, key_c, key_d, key_p, key_up, key_down, key_s, key_1, key_2, key_3, key_4, key_n) = ctx
+        let (key_s, key_c, key_d, key_p, key_up, key_down, key_1, key_2, key_3, key_4, key_n) = ctx
             .input(|i| {
                 (
-                    i.key_pressed(egui::Key::B),
+                    i.key_pressed(egui::Key::S),
                     i.key_pressed(egui::Key::C),
                     i.key_pressed(egui::Key::D),
                     i.key_pressed(egui::Key::P),
                     i.key_pressed(egui::Key::ArrowRight),
                     i.key_pressed(egui::Key::ArrowLeft),
-                    i.key_pressed(egui::Key::S),
                     i.key_pressed(egui::Key::Num1),
                     i.key_pressed(egui::Key::Num2),
                     i.key_pressed(egui::Key::Num3),
@@ -2665,7 +2664,7 @@ impl eframe::App for LanderGui {
                 )
             };
 
-            if key_b && !scanning && !connecting && !disconnecting && !command_pending {
+            if key_s && !scanning && !connecting && !disconnecting && !command_pending {
                 self.controller.lock().unwrap().scan_ports();
             }
             if key_c && !connected && !connecting && !scanning && !disconnecting {
@@ -2686,9 +2685,6 @@ impl eframe::App for LanderGui {
             }
             if key_down && connected && !command_pending {
                 self.servo_angle = (self.servo_angle - 5.0).max(0.0);
-                self.controller.lock().unwrap().send_servo(self.servo_angle);
-            }
-            if key_s && connected && !command_pending {
                 self.controller.lock().unwrap().send_servo(self.servo_angle);
             }
             for (pressed, pattern) in [(key_1, 1u32), (key_2, 2), (key_3, 3), (key_4, 4)] {
@@ -3166,7 +3162,7 @@ impl eframe::App for LanderGui {
                         .num_columns(2)
                         .spacing([16.0, 4.0])
                         .show(ui, |ui| {
-                            Self::shortcut_hint(ui, &["B"]);
+                            Self::shortcut_hint(ui, &["S"]);
                             ui.label("BLE scan");
                             ui.end_row();
 
@@ -3188,10 +3184,6 @@ impl eframe::App for LanderGui {
                                 Self::shortcut_keycap(ui, "→");
                             });
                             ui.label("Servo +5° / −5°  (auto-send)");
-                            ui.end_row();
-
-                            Self::shortcut_hint(ui, &["S"]);
-                            ui.label("Send current servo angle");
                             ui.end_row();
 
                             Self::shortcut_hint(ui, &["1", "2", "3", "4"]);
