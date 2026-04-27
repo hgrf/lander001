@@ -2867,12 +2867,13 @@ impl eframe::App for LanderGui {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(texture) = &self.app_icon_texture {
-                    ui.image((texture.id(), egui::vec2(128.0, 128.0)));
+                    ui.image((texture.id(), egui::vec2(90.0, 90.0)));
                     ui.add_space(6.0);
                 }
                 ui.heading("landerctl");
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(10.0);
                     if scanning {
                         ui.add(egui::Spinner::new().size(14.0));
                         let elapsed = scan_started_at
