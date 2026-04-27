@@ -3,5 +3,6 @@
 /target
 /Cargo.lock
 /vendor/tray-item
+/vendor/esp-idf-svc
 
 .DS_Store

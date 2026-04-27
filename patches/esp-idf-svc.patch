@@ -1,0 +1,39 @@
+diff --git a/src/bt/ble/gatt/server.rs b/src/bt/ble/gatt/server.rs
+index 6ecf7ef..0000001 100644
+--- a/src/bt/ble/gatt/server.rs
++++ b/src/bt/ble/gatt/server.rs
+@@ -364,7 +364,7 @@ use super::{
+             esp_gatts_cb_event_t_ESP_GATTS_DISCONNECT_EVT => unsafe {
+                 Self::PeerDisconnected {
+                     conn_id: param.disconnect.conn_id,
+                     addr: param.disconnect.remote_bda.into(),
+-                    reason: param.disconnect.reason.try_into().unwrap(),
++                    reason: param.disconnect.reason.try_into().unwrap_or(GattConnReason::Unknown),
+                 }
+             },
+             esp_gatts_cb_event_t_ESP_GATTS_OPEN_EVT => unsafe {
+diff --git a/src/bt/ble/gatt/client.rs b/src/bt/ble/gatt/client.rs
+index 4cb3282..0000002 100644
+--- a/src/bt/ble/gatt/client.rs
++++ b/src/bt/ble/gatt/client.rs
+@@ -717,7 +717,7 @@ use super::{GattConnParams, GattConnReason, GattInterface, GattStatus, Handle};
+             esp_gattc_cb_event_t_ESP_GATTC_CLOSE_EVT => unsafe {
+                 Self::Close {
+                     status: param.close.status.try_into().unwrap(),
+                     conn_id: param.close.conn_id,
+                     addr: param.close.remote_bda.into(),
+-                    reason: param.close.reason.try_into().unwrap(),
++                    reason: param.close.reason.try_into().unwrap_or(GattConnReason::Unknown),
+                 }
+             },
+             esp_gattc_cb_event_t_ESP_GATTC_SEARCH_CMPL_EVT => unsafe {
+@@ -838,7 +838,7 @@ use super::{GattConnParams, GattConnReason, GattInterface, GattStatus, Handle};
+             esp_gattc_cb_event_t_ESP_GATTC_DISCONNECT_EVT => unsafe {
+                 Self::Disconnected {
+                     conn_id: param.disconnect.conn_id,
+                     addr: param.disconnect.remote_bda.into(),
+-                    reason: param.disconnect.reason.try_into().unwrap(),
++                    reason: param.disconnect.reason.try_into().unwrap_or(GattConnReason::Unknown),
+                 }
+             },
+             esp_gattc_cb_event_t_ESP_GATTC_READ_MULTIPLE_EVT => unsafe {

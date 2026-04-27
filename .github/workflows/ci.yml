@@ -139,7 +139,7 @@ jobs:
       - name: Assemble AppDir
         run: |
           mkdir -p AppDir/usr/bin
-          cp landerctl/target/release/landerctl AppDir/usr/bin/
+          cp target/release/landerctl AppDir/usr/bin/
           convert assets/gui/icon.png -resize 512x512 AppDir/landerctl.png
 
           cat > AppDir/landerctl.desktop << 'EOF'
@@ -207,7 +207,7 @@ jobs:
           APP_ROOT="dist/Landerctl.app"
           mkdir -p "$APP_ROOT/Contents/MacOS" "$APP_ROOT/Contents/Resources"
 
-          cp landerctl/target/release/landerctl "$APP_ROOT/Contents/MacOS/landerctl"
+          cp target/release/landerctl "$APP_ROOT/Contents/MacOS/landerctl"
           cp assets/gui/icon.png "$APP_ROOT/Contents/Resources/icon.png"
 
           cat > "$APP_ROOT/Contents/Info.plist" << 'EOF'
@@ -322,6 +322,9 @@ jobs:
           path: ~/.espressif
           key: espressif-${{ hashFiles('fw/.cargo/config.toml', 'fw/Cargo.toml') }}
           restore-keys: espressif-
+
+      - name: Set up patched esp-idf-svc dependency
+        run: ./scripts/setup_esp_idf_svc.sh
 
       - name: Build firmware
         run: |
