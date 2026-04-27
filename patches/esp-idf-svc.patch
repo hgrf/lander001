@@ -1,24 +1,8 @@
-diff --git a/src/bt/ble/gatt/server.rs b/src/bt/ble/gatt/server.rs
-index 6ecf7ef2257029390a2600f8e49b04c66d7975fb..afe95a9 100644
---- a/src/bt/ble/gatt/server.rs
-+++ b/src/bt/ble/gatt/server.rs
-@@ -364,7 +364,7 @@ use super::{
-             esp_gatts_cb_event_t_ESP_GATTS_DISCONNECT_EVT => unsafe {
-                 Self::PeerDisconnected {
-                     conn_id: param.disconnect.conn_id,
-                     addr: param.disconnect.remote_bda.into(),
--                    reason: param.disconnect.reason.try_into().unwrap(),
-+                    reason: param.disconnect.reason.try_into().unwrap_or(GattConnReason::Unknown),
-                 }
-             },
-             esp_gatts_cb_event_t_ESP_GATTS_OPEN_EVT => unsafe {
 diff --git a/src/bt/ble/gatt/client.rs b/src/bt/ble/gatt/client.rs
-index 4cb32824f3296f59eee321c353f04b73931b45ac..afe95a9 100644
+index 4cb3282..bd9c6e4 100644
 --- a/src/bt/ble/gatt/client.rs
 +++ b/src/bt/ble/gatt/client.rs
-@@ -717,7 +717,7 @@ use super::{GattConnParams, GattConnReason, GattInterface, GattStatus, Handle};
-             esp_gattc_cb_event_t_ESP_GATTC_CLOSE_EVT => unsafe {
-                 Self::Close {
+@@ -719,7 +719,7 @@ impl<'a> From<(esp_gattc_cb_event_t, &'a esp_ble_gattc_cb_param_t)> for GattcEve
                      status: param.close.status.try_into().unwrap(),
                      conn_id: param.close.conn_id,
                      addr: param.close.remote_bda.into(),
@@ -27,8 +11,7 @@ index 4cb32824f3296f59eee321c353f04b73931b45ac..afe95a9 100644
                  }
              },
              esp_gattc_cb_event_t_ESP_GATTC_SEARCH_CMPL_EVT => unsafe {
-@@ -838,7 +838,7 @@ use super::{GattConnParams, GattConnReason, GattInterface, GattStatus, Handle};
-             esp_gattc_cb_event_t_ESP_GATTC_DISCONNECT_EVT => unsafe {
+@@ -838,7 +838,7 @@ impl<'a> From<(esp_gattc_cb_event_t, &'a esp_ble_gattc_cb_param_t)> for GattcEve
                  Self::Disconnected {
                      conn_id: param.disconnect.conn_id,
                      addr: param.disconnect.remote_bda.into(),
@@ -37,3 +20,16 @@ index 4cb32824f3296f59eee321c353f04b73931b45ac..afe95a9 100644
                  }
              },
              esp_gattc_cb_event_t_ESP_GATTC_READ_MULTIPLE_EVT => unsafe {
+diff --git a/src/bt/ble/gatt/server.rs b/src/bt/ble/gatt/server.rs
+index 6ecf7ef..6f47075 100644
+--- a/src/bt/ble/gatt/server.rs
++++ b/src/bt/ble/gatt/server.rs
+@@ -364,7 +364,7 @@ impl<'a> From<(esp_gatts_cb_event_t, &'a esp_ble_gatts_cb_param_t)> for GattsEve
+                 Self::PeerDisconnected {
+                     conn_id: param.disconnect.conn_id,
+                     addr: param.disconnect.remote_bda.into(),
+-                    reason: param.disconnect.reason.try_into().unwrap(),
++                    reason: param.disconnect.reason.try_into().unwrap_or(GattConnReason::Unknown),
+                 }
+             },
+             esp_gatts_cb_event_t_ESP_GATTS_OPEN_EVT => unsafe {
