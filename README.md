@@ -152,12 +152,13 @@ cargo run -- --nogui --simulate whatsapp --from "Bob" --text "Ping!" --count 5 -
 
 On Linux, this uses `dbus-monitor` to observe `org.freedesktop.Notifications.Notify` calls and forwards them as protobuf `NotificationEvent` messages, waiting for an ACK after each send.
 
-Firmware builds are now explicit instead of being forced globally through Cargo config. Use:
+Firmware builds now live in `fw/`. Use:
 
 ```sh
-cargo fw-check
-cargo fw-build
-cargo fw-run
+cd fw
+cargo check
+cargo build
+cargo run
 ```
 
 This mode tails the macOS unified log (`log stream`) for `usernoted` / `UserNotifications` activity, extracts a source app identifier when available, deduplicates short bursts, and forwards normalized protobuf `NotificationEvent` messages to the robot.
